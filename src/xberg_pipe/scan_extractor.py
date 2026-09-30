@@ -61,7 +61,7 @@ def sha256_of(path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def iter_files(root: Path) -> Iterator[list[Path]]:
+def iter_files(root: Path, batch_size: int = BATCH_SIZE) -> Iterator[list[Path]]:
     """ディレクトリを再帰探索し、一定件数ごとにファイル一覧を返す."""
     batch: list[Path] = []
     for path in root.rglob("*"):
@@ -73,7 +73,7 @@ def iter_files(root: Path) -> Iterator[list[Path]]:
 
         batch.append(path)
 
-        if len(batch) >= BATCH_SIZE:
+        if len(batch) >= batch_size:
             yield batch
             batch.clear()
 
@@ -82,10 +82,19 @@ def iter_files(root: Path) -> Iterator[list[Path]]:
 
 
 class ScanExtractor:
-    def __init__(self, session: Session, root: Path) -> None:
+    def __init__(
+        self,
+        session: Session,
+        root: Path,
+        extraction_config: ExtractionConfig | None = None,
+        batch_size: int = BATCH_SIZE,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
         self.session = session
         self.root = root
-        self.extraction_config = ExtractionConfig(
+        self.batch_size = batch_size
+        self.extraction_config = extraction_config or ExtractionConfig(
             ocr=OcrConfig(backend="paddleocr", language=["jpn", "en"])
         )
 
@@ -105,7 +114,7 @@ class ScanExtractor:
         """対象ファイルを再帰探索し、変更分の抽出結果をSQLiteへ保存する."""
 
         result = ScanResult()
-        for paths in iter_files(self.root):
+        for paths in iter_files(self.root, self.batch_size):
             result.discovered += len(paths)
             changed_paths = [path for path in paths if not self._is_unchanged(path)]
             result.skipped += len(paths) - len(changed_paths)

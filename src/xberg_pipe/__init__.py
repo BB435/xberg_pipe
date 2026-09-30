@@ -1,2 +1,4 @@
-def main() -> None:
-    print("Hello from xberg-pipe!")
+def main() -> int:
+    from xberg_pipe.cli import main as cli_main
+
+    return cli_main()
