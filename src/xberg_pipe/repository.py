@@ -11,6 +11,7 @@ def get_or_create_document(session: Session, sha256: str, extension: str) -> Doc
         return document
 
     document = Document(id=sha256, extension=extension, status="hash")
+    session.add(document)
     return document
 
 

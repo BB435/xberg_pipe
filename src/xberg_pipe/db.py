@@ -9,7 +9,7 @@ DB_PATH = "data/app.db"
 
 engine = create_engine(f"sqlite:///{Path(DB_PATH).as_posix()}")
 
-LocalSession = sessionmaker(autoflush=False)
+LocalSession = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
 def init_db() -> None:

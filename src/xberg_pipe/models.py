@@ -26,15 +26,11 @@ class Document(Base):
 class DocumentPath(Base):
     __tablename__ = "document_paths"
 
-    __table_args__ = (
-        UniqueConstraint("document_id", "path", name="uq_document_id_path"),
-    )
-
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     document_id: Mapped[str] = mapped_column(
         ForeignKey("documents.id", ondelete="CASCADE"), index=True
     )
-    path: Mapped[str] = mapped_column(primary_key=True)
+    path: Mapped[str] = mapped_column(unique=True)
     file_size: Mapped[int]
     modified_at: Mapped[dt.datetime]
     updated_at: Mapped[dt.datetime] = mapped_column(
@@ -45,10 +41,12 @@ class DocumentPath(Base):
 
 
 class DocumentText(Base):
+    __tablename__ = "document_texts"
+
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
 
     __table_args__ = (
-        UniqueConstraint("document_id", "path", name="uq_document_id_path"),
+        UniqueConstraint("document_id", "extractor", name="uq_document_id_extractor"),
         Index("idx_document_id_extractor", "document_id", "extractor"),
     )
     document_id: Mapped[str] = mapped_column(
