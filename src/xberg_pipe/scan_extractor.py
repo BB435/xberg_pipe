@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from xberg import ExtractInput, extract_batch
+from xberg import ExtractInput, ExtractionConfig, OcrConfig, extract_batch
 
 from xberg_pipe.chunking import replace_document_chunks
 from xberg_pipe.models import Document, DocumentPath, DocumentText
@@ -85,6 +85,9 @@ class ScanExtractor:
     def __init__(self, session: Session, root: Path) -> None:
         self.session = session
         self.root = root
+        self.extraction_config = ExtractionConfig(
+            ocr=OcrConfig(backend="paddleocr", language=["jpn", "en"])
+        )
 
     def _is_unchanged(self, path: Path) -> bool:
         """ファイルが変化したかをチェックする."""
@@ -114,7 +117,8 @@ class ScanExtractor:
                     [
                         ExtractInput(kind="uri", uri=str(path.resolve()))
                         for path in changed_paths
-                    ]
+                    ],
+                    self.extraction_config,
                 )
             except Exception:
                 logger.exception(
