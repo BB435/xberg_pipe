@@ -15,6 +15,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]
 
@@ -29,3 +30,5 @@ build-backend = "uv_build"
 ignore = ["DTZ"]
 logger-objects = ["loguru.logger"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
