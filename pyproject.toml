@@ -13,6 +13,11 @@ dependencies = [
     "xberg>=1.3.0",
 ]
 
+[dependency-groups]
+dev = [
+    "ruff>=0.16.9",
+]
+
 [project.scripts]
 xberg-pipe = "xberg_pipe:main"
 
@@ -23,3 +28,4 @@ build-backend = "uv_build"
 [tool.ruff.lint]
 ignore = ["DTZ"]
 logger-objects = ["loguru.logger"]
+
