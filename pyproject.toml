@@ -24,7 +24,11 @@ vectors = [
     "sentence-transformers>=3.4.1",
     "sqlite-vec>=0.1.6",
 ]
-all = ["xberg-pipe[keywords, vectors]"]
+vis = [
+    "fastapi[standard]>=0.142.2",
+]
+
+all = ["xberg-pipe[keywords, vectors, vis]"]
 
 [dependency-groups]
 dev = [

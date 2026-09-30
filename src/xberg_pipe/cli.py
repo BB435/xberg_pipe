@@ -104,6 +104,15 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--device", help="例: cpu, cuda, cuda:0")
     search.add_argument("--top-k", type=int, default=10)
 
+    serve = subparsers.add_parser(
+        "serve", help="ベクトル検索・キーワード検索サーバーを起動します。"
+    )
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--model", choices=RURI_MODELS, default=DEFAULT_MODEL)
+    serve.add_argument("--device", help="例: cpu, cuda, cuda:0")
+    serve.add_argument("--preview-chars", type=int, default=240)
+
     subparsers.add_parser("stats", help="SQLiteに保存された件数を表示します。")
     return parser
 
@@ -225,6 +234,26 @@ def _run_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_serve(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+    except ImportError as error:
+        raise RuntimeError(
+            "サーバー依存がありません。uv sync --extra vis を実行してください。"
+        ) from error
+
+    from xberg_pipe.server import create_app
+
+    app = create_app(
+        args.database,
+        model_name=args.model,
+        device=args.device,
+        preview_chars=args.preview_chars,
+    )
+    uvicorn.run(app, host=args.host, port=args.port)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -252,6 +281,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return _run_embed(args)
             if args.command == "search":
                 return _run_search(args)
+            if args.command == "serve":
+                return _run_serve(args)
             if args.command == "stats":
                 return _run_stats(session)
     except (OSError, RuntimeError, ValueError) as error:
