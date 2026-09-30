@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from xberg import ExtractInput, extract_batch
 
-from xberg_pipe.models import DocumentPath, DocumentText
+from xberg_pipe.models import Document, DocumentPath, DocumentText
 from xberg_pipe.repository import get_document_path, get_or_create_document
 
 if TYPE_CHECKING:
@@ -35,6 +35,8 @@ SUPPORTED_EXTENSIONS = {
 BATCH_SIZE = 20
 
 EXTRACTOR_NAME = "xberg"
+STATUS_EXTRACTED = "extracted"
+STATUS_FAILED = "failed"
 
 
 @dataclass(slots=True)
@@ -114,11 +116,12 @@ class ScanExtractor:
                     ]
                 )
             except Exception:
-                self.session.rollback()
-                result.failed += len(changed_paths)
                 logger.exception(
                     f"Batch extraction failed ({len(changed_paths)} files)"
                 )
+                for path in changed_paths:
+                    result.failed += 1
+                    self._mark_failed(path)
                 continue
 
             errors_by_index = {error.index: error for error in extraction.errors}
@@ -128,6 +131,7 @@ class ScanExtractor:
                 if error is not None:
                     result.failed += 1
                     logger.error(f"Extraction failed for {path}: {error.message}")
+                    self._mark_failed(path)
                     continue
 
                 try:
@@ -136,9 +140,9 @@ class ScanExtractor:
                     self.session.commit()
                     result.extracted += 1
                 except StopIteration:
-                    self.session.rollback()
                     result.failed += 1
                     logger.error(f"Extractor returned no result for {path}")
+                    self._mark_failed(path)
                 except Exception:
                     self.session.rollback()
                     result.failed += 1
@@ -147,20 +151,12 @@ class ScanExtractor:
         return result
 
     def _save(self, path: Path, text: str) -> None:
-        resolved_path = str(path.resolve())
-        stat = path.stat()
         document = get_or_create_document(
             self.session, sha256_of(path), path.suffix.lower()
         )
-        document.status = "extracted"
+        document.status = STATUS_EXTRACTED
 
-        document_path = get_document_path(self.session, resolved_path)
-        if document_path is None:
-            document_path = DocumentPath(path=resolved_path)
-            self.session.add(document_path)
-        document_path.document = document
-        document_path.file_size = stat.st_size
-        document_path.modified_at = modified_at_of(path)
+        self._save_path(document, path)
 
         document_text = next(
             (item for item in document.texts if item.extractor == EXTRACTOR_NAME), None
@@ -169,3 +165,29 @@ class ScanExtractor:
             document_text = DocumentText(extractor=EXTRACTOR_NAME, document=document)
             self.session.add(document_text)
         document_text.extracted_text = text
+
+    def _mark_failed(self, path: Path) -> None:
+        """抽出失敗を保存する."""
+
+        try:
+            document = get_or_create_document(
+                self.session, sha256_of(path), path.suffix.lower()
+            )
+            document.status = STATUS_FAILED
+            self._save_path(document, path)
+            self.session.commit()
+        except Exception:
+            # DBエラー後のSessionでは後続処理できないため、ここだけは復旧する。
+            self.session.rollback()
+            logger.exception(f"Could not save extraction failure for {path}")
+
+    def _save_path(self, document: Document, path: Path) -> None:
+        resolved_path = str(path.resolve())
+        stat = path.stat()
+        document_path = get_document_path(self.session, resolved_path)
+        if document_path is None:
+            document_path = DocumentPath(path=resolved_path)
+            self.session.add(document_path)
+        document_path.document = document
+        document_path.file_size = stat.st_size
+        document_path.modified_at = modified_at_of(path)
