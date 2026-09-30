@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from xberg import ExtractInput, extract_batch
 
+from xberg_pipe.chunking import replace_document_chunks
 from xberg_pipe.models import Document, DocumentPath, DocumentText
 from xberg_pipe.repository import get_document_path, get_or_create_document
 
@@ -165,6 +166,7 @@ class ScanExtractor:
             document_text = DocumentText(extractor=EXTRACTOR_NAME, document=document)
             self.session.add(document_text)
         document_text.extracted_text = text
+        replace_document_chunks(self.session, document_text)
 
     def _mark_failed(self, path: Path) -> None:
         """抽出失敗を保存する."""
