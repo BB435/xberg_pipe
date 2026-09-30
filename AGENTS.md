@@ -1,52 +1,57 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Project Structure & Processing Flow
 
-Application code lives under `src/xberg_pipe/`. The package entry point is
-`src/xberg_pipe/__init__.py`; `scan_extractor.py` handles recursive file discovery,
-`models.py` defines SQLAlchemy entities, `repository.py` contains persistence
-queries, and `db.py` configures the SQLite database. Runtime data is created under
-`data/` and should not be committed. `pyproject.toml` defines package metadata,
-dependencies, and the `xberg-pipe` console command. The root `test.py` is currently
-a small exploratory script, not a complete automated test suite.
+Source code lives in `src/xberg_pipe/`. `cli.py` defines commands,
+`scan_extractor.py` saves extracted text, and `models.py` contains the schema.
+Post-processing is separate: `chunking.py` creates Japanese-aware chunks, `keywording.py` runs
+KeyBERT, `summarization.py` calls an OpenAI-compatible local LLM, and
+`vector_store.py` manages sqlite-vec embeddings and search. Database setup and
+queries belong in `db.py` and `repository.py`. Tests live under `tests/`.
+Runtime databases and downloaded models must not be committed.
+
+The expected pipeline is `scan` → `chunk` → optional `keywords`, `summarize`,
+and `embed` → `search`. Keep extraction independent from expensive downstream
+processing. When extracted text changes, derived chunks, keywords, summaries,
+and embedding metadata must be invalidated.
 
 ## Build, Test, and Development Commands
 
-This project uses Python 3.14 and `uv`.
+This project requires Python 3.14 and uses `uv`.
 
-- `uv sync` creates or updates `.venv` from `uv.lock`.
-- `uv run xberg-pipe` runs the installed console entry point.
-- `uv run python test.py` runs the current smoke script.
-- `uv build` produces source and wheel distributions in `dist/`.
-- `uvx ruff check .` checks Python style; add `--fix` for safe automatic fixes.
-- `uvx ruff format .` formats Python files.
+- `uv sync --group dev` installs core and development dependencies.
+- `uv sync --extra all --group dev` also installs KeyBERT and sqlite-vec support.
+- `uv run xberg-pipe scan <directory>` extracts text into `data/app.db`.
+- `uv run xberg-pipe chunk` generates chunks as a separate step.
+- `uv run pytest -q` runs the test suite.
+- `uv run ruff check src tests` checks lint rules.
+- `uv run ruff format --check src tests` verifies formatting.
+- `uv build` creates distributions in `dist/`.
 
-Run commands from the repository root so relative paths such as `data/app.db`
-resolve consistently.
+Use `--database <path>` before the subcommand when testing a non-default DB.
 
 ## Coding Style & Naming Conventions
 
-Use four-space indentation, modern Python type annotations, and `pathlib.Path`
-for filesystem work. Follow standard Python naming: `snake_case` for functions and
-modules, `PascalCase` for classes, and `UPPER_CASE` for constants. Keep database
-operations in `repository.py`, ORM declarations in `models.py`, and scanning or
-extraction logic in focused service modules. Ruff is configured in
-`pyproject.toml`; timezone lint (`DTZ`) is intentionally disabled. Existing
-docstrings are Japanese, so preserve the surrounding file's language and tone.
+Use four spaces, type annotations, `pathlib.Path`, and typed dataclasses.
+Follow `snake_case` for functions and
+modules, `PascalCase` for classes, and `UPPER_CASE` for constants. Keep heavy ML
+imports lazy so basic CLI commands work without optional extras. Preserve the
+existing concise Japanese docstring and user-message style. Ruff configuration
+lives in `pyproject.toml`.
 
 ## Testing Guidelines
 
-There is no configured test framework or coverage threshold yet. New behavior
-should add `pytest` tests under `tests/`, named `test_<module>.py`, with test
-functions named `test_<behavior>`. Prefer temporary directories and temporary
-SQLite databases; do not let tests modify `data/app.db`. Once pytest is added,
-run the suite with `uv run pytest`.
+Write pytest files as `tests/test_<module>.py` and functions as
+`test_<behavior>`. Use `tmp_path`, in-memory SQLite, and fake LLM/embedding
+implementations; never write tests to `data/app.db` or download production
+models. Mark optional-extension tests with `pytest.importorskip`. Validate both
+stored rows and invalidation behavior. Run sqlite-vec integration separately
+when needed: `uv run --with sqlite-vec pytest -q tests/test_vector_store.py`.
 
-## Commit & Pull Request Guidelines
+## Commits & Pull Requests
 
-History currently contains only the short commit `poc phase1`, so no strong
-convention is established. Use concise, imperative subjects such as
-`Add document scan batching`. Keep commits focused. Pull requests should explain
-the behavior change, list verification commands, link relevant issues, and call
-out schema or dependency changes. Include screenshots only for user-visible
-output.
+History uses short Conventional Commit-style subjects such as `feat: add cli
+tool` and `chore: add pytest dependency`. Use `feat:`, `fix:`, `test:`, or
+`chore:` with one focused change per commit. Pull requests should describe the
+pipeline impact, schema or dependency changes, verification commands, and any
+model download or migration requirements. Link relevant issues.
