@@ -1,6 +1,6 @@
 import datetime as dt
 
-from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import Float, ForeignKey, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -63,6 +63,11 @@ class DocumentText(Base):
         cascade="all, delete-orphan",
         order_by="DocumentChunk.chunk_index",
     )
+    keywords: Mapped[list[DocumentKeyword]] = relationship(
+        back_populates="document_text",
+        cascade="all, delete-orphan",
+        order_by="DocumentKeyword.rank",
+    )
 
 
 class DocumentChunk(Base):
@@ -86,3 +91,26 @@ class DocumentChunk(Base):
     chunker_version: Mapped[str] = mapped_column(String(20))
 
     document_text: Mapped[DocumentText] = relationship(back_populates="chunks")
+
+
+class DocumentKeyword(Base):
+    """抽出テキスト全体に対するKeyBERTキーワード."""
+
+    __tablename__ = "document_keywords"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_text_id", "model_name", "rank", name="uq_text_model_rank"
+        ),
+        Index("idx_document_keywords_document_text", "document_text_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    document_text_id: Mapped[int] = mapped_column(
+        ForeignKey("document_texts.id", ondelete="CASCADE")
+    )
+    model_name: Mapped[str] = mapped_column(String(200))
+    rank: Mapped[int]
+    keyword: Mapped[str] = mapped_column(Text)
+    score: Mapped[float] = mapped_column(Float)
+
+    document_text: Mapped[DocumentText] = relationship(back_populates="keywords")

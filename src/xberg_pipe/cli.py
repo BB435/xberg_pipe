@@ -9,7 +9,14 @@ from xberg import ExtractionConfig, OcrConfig
 
 from xberg_pipe.chunking import ChunkingConfig, rebuild_all_chunks
 from xberg_pipe.db import DB_PATH, create_db_engine, init_db
-from xberg_pipe.models import Document, DocumentChunk, DocumentPath, DocumentText
+from xberg_pipe.keywording import DEFAULT_MODEL, RURI_MODELS, KeywordConfig
+from xberg_pipe.models import (
+    Document,
+    DocumentChunk,
+    DocumentKeyword,
+    DocumentPath,
+    DocumentText,
+)
 from xberg_pipe.scan_extractor import BATCH_SIZE, ScanExtractor
 
 
@@ -55,6 +62,19 @@ def build_parser() -> argparse.ArgumentParser:
     chunk.add_argument("--target-chars", type=int, default=1_200)
     chunk.add_argument("--overlap-chars", type=int, default=200)
     chunk.add_argument("--batch-size", type=int, default=100)
+
+    keywords = subparsers.add_parser(
+        "keywords", help="KeyBERTでファイルごとのキーワードを抽出します。"
+    )
+    keywords.add_argument(
+        "--model", choices=RURI_MODELS, default=DEFAULT_MODEL, help="Ruri埋め込みモデル"
+    )
+    keywords.add_argument("--top-n", type=int, default=10)
+    keywords.add_argument("--max-ngram", type=int, default=3)
+    keywords.add_argument("--max-candidates", type=int, default=500)
+    keywords.add_argument("--diversity", type=float, default=0.35)
+    keywords.add_argument("--device", help="例: cpu, cuda, cuda:0")
+    keywords.add_argument("--batch-size", type=int, default=20)
 
     subparsers.add_parser("stats", help="SQLiteに保存された件数を表示します。")
     return parser
@@ -104,10 +124,31 @@ def _run_stats(session: Session) -> int:
         ("paths", DocumentPath),
         ("texts", DocumentText),
         ("chunks", DocumentChunk),
+        ("keywords", DocumentKeyword),
     )
     for label, model in tables:
         count = session.scalar(select(func.count()).select_from(model))
         print(f"{label}={count}")
+    return 0
+
+
+def _run_keywords(args: argparse.Namespace, session: Session) -> int:
+    # 重いML依存とモデルのロードは、このコマンドを選択したときだけ行う。
+    from xberg_pipe.keywording import rebuild_all_keywords
+
+    config = KeywordConfig(
+        model_name=args.model,
+        top_n=args.top_n,
+        max_ngram=args.max_ngram,
+        max_candidates=args.max_candidates,
+        diversity=args.diversity,
+        device=args.device,
+    )
+    result = rebuild_all_keywords(session, config=config, batch_size=args.batch_size)
+    print(
+        f"処理文書={result.documents} 保存キーワード={result.keywords} "
+        f"スキップ={result.skipped}"
+    )
     return 0
 
 
@@ -130,8 +171,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return _run_scan(args, session)
             if args.command == "chunk":
                 return _run_chunk(args, session)
+            if args.command == "keywords":
+                return _run_keywords(args, session)
             if args.command == "stats":
                 return _run_stats(session)
-    except (OSError, ValueError) as error:
+    except (OSError, RuntimeError, ValueError) as error:
         parser.error(str(error))
     return 1

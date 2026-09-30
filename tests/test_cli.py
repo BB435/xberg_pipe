@@ -14,6 +14,7 @@ def test_init_db_and_stats(tmp_path: Path, capsys) -> None:
     assert "SQLiteを初期化しました" in output
     assert "documents=0" in output
     assert "chunks=0" in output
+    assert "keywords=0" in output
 
 
 def test_chunk_empty_database(tmp_path: Path, capsys) -> None:

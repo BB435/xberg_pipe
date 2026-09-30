@@ -13,6 +13,14 @@ dependencies = [
     "xberg>=1.3.0",
 ]
 
+[project.optional-dependencies]
+keywords = [
+    "fugashi>=1.5.2",
+    "keybert>=0.9.0",
+    "sentence-transformers>=3.4.1",
+    "unidic-lite>=1.0.8",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
