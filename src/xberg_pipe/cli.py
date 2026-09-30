@@ -37,7 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("init-db", help="SQLiteテーブルを作成します。")
 
-    scan = subparsers.add_parser("scan", help="ディレクトリを再帰走査して抽出します。")
+    scan = subparsers.add_parser(
+        "scan", help="ディレクトリを再帰走査し、抽出テキストのみ保存します。"
+    )
     scan.add_argument("root", type=Path, help="走査するディレクトリ")
     scan.add_argument(
         "--batch-size", type=int, default=BATCH_SIZE, help="一度に抽出するファイル数"

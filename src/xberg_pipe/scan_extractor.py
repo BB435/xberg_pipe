@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from xberg import ExtractInput, ExtractionConfig, OcrConfig, extract_batch
 
-from xberg_pipe.chunking import replace_document_chunks
+from xberg_pipe.chunking import clear_document_derivatives
 from xberg_pipe.models import Document, DocumentPath, DocumentText
 from xberg_pipe.repository import get_document_path, get_or_create_document
 
@@ -178,8 +178,9 @@ class ScanExtractor:
         if document_text is None:
             document_text = DocumentText(extractor=EXTRACTOR_NAME, document=document)
             self.session.add(document_text)
+        elif document_text.extracted_text != text:
+            clear_document_derivatives(self.session, document_text)
         document_text.extracted_text = text
-        replace_document_chunks(self.session, document_text)
 
     def _mark_failed(self, path: Path) -> None:
         """抽出失敗を保存する."""

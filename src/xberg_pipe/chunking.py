@@ -131,6 +131,25 @@ def replace_document_chunks(
     """指定した抽出テキストの既存チャンクを置き換える."""
 
     session.flush()
+    clear_document_derivatives(session, document_text)
+    chunks = chunk_text(document_text.extracted_text, config)
+    session.add_all(
+        DocumentChunk(
+            document_text=document_text,
+            chunk_index=index,
+            content=content,
+            character_count=len(content),
+            chunker_version=CHUNKER_VERSION,
+        )
+        for index, content in enumerate(chunks)
+    )
+    return len(chunks)
+
+
+def clear_document_derivatives(session: Session, document_text: DocumentText) -> None:
+    """抽出テキストから生成された派生データを削除する."""
+
+    session.flush()
     old_chunk_ids = select(DocumentChunk.id).where(
         DocumentChunk.document_text_id == document_text.id
     )
@@ -151,18 +170,6 @@ def replace_document_chunks(
             DocumentSummary.document_text_id == document_text.id
         )
     )
-    chunks = chunk_text(document_text.extracted_text, config)
-    session.add_all(
-        DocumentChunk(
-            document_text=document_text,
-            chunk_index=index,
-            content=content,
-            character_count=len(content),
-            chunker_version=CHUNKER_VERSION,
-        )
-        for index, content in enumerate(chunks)
-    )
-    return len(chunks)
 
 
 def rebuild_all_chunks(
