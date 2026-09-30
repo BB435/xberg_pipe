@@ -1,12 +1,14 @@
 import datetime as dt
 import hashlib
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
+from loguru import logger
 from xberg import ExtractInput, extract_batch
 
-from xberg_pipe.models import DocumentPath
+from xberg_pipe.models import DocumentPath, DocumentText
 from xberg_pipe.repository import get_document_path, get_or_create_document
 
 if TYPE_CHECKING:
@@ -32,7 +34,21 @@ SUPPORTED_EXTENSIONS = {
 }
 BATCH_SIZE = 20
 
-type FileCheckResult = Literal["insert", "update", "skip"]
+EXTRACTOR_NAME = "xberg"
+
+
+@dataclass(slots=True)
+class ScanResult:
+    discovered: int = 0
+    skipped: int = 0
+    extracted: int = 0
+    failed: int = 0
+
+
+def modified_at_of(path: Path) -> dt.datetime:
+    """SQLiteに保存できるnaive UTCで更新日時を返す."""
+
+    return dt.datetime.fromtimestamp(path.stat().st_mtime, dt.UTC).replace(tzinfo=None)
 
 
 def sha256_of(path: Path) -> str:
@@ -56,6 +72,7 @@ def iter_files(root: Path) -> Iterator[list[Path]]:
 
         if len(batch) >= BATCH_SIZE:
             yield batch
+            batch.clear()
 
     if batch:
         yield batch
@@ -72,12 +89,83 @@ class ScanExtractor:
         if document_path is None:
             return False
         stat = path.stat()
-        modified_at = dt.datetime.fromtimestamp(stat.st_mtime)
+        modified_at = modified_at_of(path)
         return bool(
             document_path.modified_at == modified_at
-            or document_path.file_size == stat.st_size
+            and document_path.file_size == stat.st_size
         )
 
-    def scan(self):
-        """再帰的にファイルを探索してテキスト抽出を行う"""
-        pass
+    async def scan(self) -> ScanResult:
+        """対象ファイルを再帰探索し、変更分の抽出結果をSQLiteへ保存する."""
+
+        result = ScanResult()
+        for paths in iter_files(self.root):
+            result.discovered += len(paths)
+            changed_paths = [path for path in paths if not self._is_unchanged(path)]
+            result.skipped += len(paths) - len(changed_paths)
+            if not changed_paths:
+                continue
+
+            try:
+                extraction = await extract_batch(
+                    [
+                        ExtractInput(kind="uri", uri=str(path.resolve()))
+                        for path in changed_paths
+                    ]
+                )
+            except Exception:
+                self.session.rollback()
+                result.failed += len(changed_paths)
+                logger.exception(
+                    f"Batch extraction failed ({len(changed_paths)} files)"
+                )
+                continue
+
+            errors_by_index = {error.index: error for error in extraction.errors}
+            documents = iter(extraction.results)
+            for index, path in enumerate(changed_paths):
+                error = errors_by_index.get(index)
+                if error is not None:
+                    result.failed += 1
+                    logger.error(f"Extraction failed for {path}: {error.message}")
+                    continue
+
+                try:
+                    extracted = next(documents)
+                    self._save(path, extracted.content)
+                    self.session.commit()
+                    result.extracted += 1
+                except StopIteration:
+                    self.session.rollback()
+                    result.failed += 1
+                    logger.error(f"Extractor returned no result for {path}")
+                except Exception:
+                    self.session.rollback()
+                    result.failed += 1
+                    logger.exception(f"Could not save extraction result for {path}")
+
+        return result
+
+    def _save(self, path: Path, text: str) -> None:
+        resolved_path = str(path.resolve())
+        stat = path.stat()
+        document = get_or_create_document(
+            self.session, sha256_of(path), path.suffix.lower()
+        )
+        document.status = "extracted"
+
+        document_path = get_document_path(self.session, resolved_path)
+        if document_path is None:
+            document_path = DocumentPath(path=resolved_path)
+            self.session.add(document_path)
+        document_path.document = document
+        document_path.file_size = stat.st_size
+        document_path.modified_at = modified_at_of(path)
+
+        document_text = next(
+            (item for item in document.texts if item.extractor == EXTRACTOR_NAME), None
+        )
+        if document_text is None:
+            document_text = DocumentText(extractor=EXTRACTOR_NAME, document=document)
+            self.session.add(document_text)
+        document_text.extracted_text = text
