@@ -1,10 +1,11 @@
+import asyncio
 from pathlib import Path
 
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from xberg_pipe.chunking import replace_document_chunks
-from xberg_pipe.models import Base, DocumentChunk, DocumentText
+from xberg_pipe.models import Base, Document, DocumentChunk, DocumentText
 from xberg_pipe.scan_extractor import ScanExtractor
 
 
@@ -49,3 +50,46 @@ def test_changed_extracted_text_invalidates_chunks(tmp_path: Path) -> None:
         session.commit()
 
         assert session.scalar(select(func.count()).select_from(DocumentChunk)) == 0
+
+
+def test_changed_file_removes_orphaned_previous_document(tmp_path: Path) -> None:
+    source = tmp_path / "document.txt"
+    source.write_text("変更前", encoding="utf-8")
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        extractor = ScanExtractor(session, tmp_path)
+        extractor._save(source, "変更前の抽出結果")
+        session.flush()
+        previous_text = session.scalar(select(DocumentText))
+        assert previous_text is not None
+        replace_document_chunks(session, previous_text)
+        session.commit()
+
+        source.write_text("変更後のファイル", encoding="utf-8")
+        extractor._save(source, "変更後の抽出結果")
+        session.commit()
+
+        assert session.scalar(select(func.count()).select_from(Document)) == 1
+        assert session.scalar(select(func.count()).select_from(DocumentText)) == 1
+        assert session.scalar(select(func.count()).select_from(DocumentChunk)) == 0
+        assert session.scalar(select(DocumentText.extracted_text)) == "変更後の抽出結果"
+
+
+def test_scan_removes_deleted_file_and_orphaned_document(tmp_path: Path) -> None:
+    source = tmp_path / "document.txt"
+    source.write_text("削除対象", encoding="utf-8")
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        extractor = ScanExtractor(session, tmp_path)
+        extractor._save(source, "削除対象の抽出結果")
+        session.commit()
+        source.unlink()
+
+        asyncio.run(extractor.scan())
+
+        assert session.scalar(select(func.count()).select_from(Document)) == 0
+        assert session.scalar(select(func.count()).select_from(DocumentText)) == 0

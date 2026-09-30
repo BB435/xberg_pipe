@@ -19,6 +19,46 @@ MODEL_TABLES = {
 }
 
 
+def delete_chunk_vectors(
+    connection: sqlite3.Connection, chunk_ids: Sequence[int]
+) -> None:
+    """指定チャンクのsqlite-vec実体を、存在する全モデル表から削除する."""
+
+    if not chunk_ids:
+        return
+    existing_tables = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    vector_tables = set(MODEL_TABLES.values()) & existing_tables
+    if not vector_tables:
+        return
+
+    try:
+        import sqlite_vec
+    except ImportError as error:
+        raise RuntimeError(
+            "既存ベクトルの無効化にはsqlite-vecが必要です。"
+            "uv sync --extra vectors を実行してください。"
+        ) from error
+
+    connection.enable_load_extension(True)
+    try:
+        sqlite_vec.load(connection)
+    finally:
+        connection.enable_load_extension(False)
+
+    for start in range(0, len(chunk_ids), 500):
+        batch = chunk_ids[start : start + 500]
+        placeholders = ",".join("?" for _ in batch)
+        for table in vector_tables:
+            connection.execute(
+                f"DELETE FROM {table} WHERE chunk_id IN ({placeholders})", batch
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class EmbeddingConfig:
     model_name: str = DEFAULT_MODEL

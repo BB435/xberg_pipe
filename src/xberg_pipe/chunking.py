@@ -150,9 +150,19 @@ def clear_document_derivatives(session: Session, document_text: DocumentText) ->
     """抽出テキストから生成された派生データを削除する."""
 
     session.flush()
-    old_chunk_ids = select(DocumentChunk.id).where(
-        DocumentChunk.document_text_id == document_text.id
+    old_chunk_ids = list(
+        session.scalars(
+            select(DocumentChunk.id).where(
+                DocumentChunk.document_text_id == document_text.id
+            )
+        )
     )
+    if old_chunk_ids:
+        # sqlite-vecの仮想表には外部キー制約がないため、実体も明示的に消す。
+        from xberg_pipe.vector_store import delete_chunk_vectors
+
+        raw_connection = session.connection().connection.driver_connection
+        delete_chunk_vectors(raw_connection, old_chunk_ids)
     session.execute(
         delete(ChunkEmbedding).where(ChunkEmbedding.chunk_id.in_(old_chunk_ids))
     )

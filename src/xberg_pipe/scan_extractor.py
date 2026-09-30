@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
+from sqlalchemy import func, select
 from xberg import ExtractInput, ExtractionConfig, OcrConfig, extract_batch
 
 from xberg_pipe.chunking import clear_document_derivatives
@@ -114,7 +115,9 @@ class ScanExtractor:
         """対象ファイルを再帰探索し、変更分の抽出結果をSQLiteへ保存する."""
 
         result = ScanResult()
+        seen_paths: set[str] = set()
         for paths in iter_files(self.root, self.batch_size):
+            seen_paths.update(str(path.resolve()) for path in paths)
             result.discovered += len(paths)
             changed_paths = [path for path in paths if not self._is_unchanged(path)]
             result.skipped += len(paths) - len(changed_paths)
@@ -162,6 +165,8 @@ class ScanExtractor:
                     result.failed += 1
                     logger.exception(f"Could not save extraction result for {path}")
 
+        self._remove_missing_paths(seen_paths)
+        self.session.commit()
         return result
 
     def _save(self, path: Path, text: str) -> None:
@@ -170,7 +175,7 @@ class ScanExtractor:
         )
         document.status = STATUS_EXTRACTED
 
-        self._save_path(document, path)
+        previous_document = self._save_path(document, path)
 
         document_text = next(
             (item for item in document.texts if item.extractor == EXTRACTOR_NAME), None
@@ -181,6 +186,7 @@ class ScanExtractor:
         elif document_text.extracted_text != text:
             clear_document_derivatives(self.session, document_text)
         document_text.extracted_text = text
+        self._delete_document_if_orphaned(previous_document, except_document=document)
 
     def _mark_failed(self, path: Path) -> None:
         """抽出失敗を保存する."""
@@ -190,20 +196,62 @@ class ScanExtractor:
                 self.session, sha256_of(path), path.suffix.lower()
             )
             document.status = STATUS_FAILED
-            self._save_path(document, path)
+            previous_document = self._save_path(document, path)
+            self._delete_document_if_orphaned(
+                previous_document, except_document=document
+            )
             self.session.commit()
         except Exception:
             # DBエラー後のSessionでは後続処理できないため、ここだけは復旧する。
             self.session.rollback()
             logger.exception(f"Could not save extraction failure for {path}")
 
-    def _save_path(self, document: Document, path: Path) -> None:
+    def _save_path(self, document: Document, path: Path) -> Document | None:
         resolved_path = str(path.resolve())
         stat = path.stat()
         document_path = get_document_path(self.session, resolved_path)
         if document_path is None:
             document_path = DocumentPath(path=resolved_path)
             self.session.add(document_path)
+        previous_document = document_path.document
         document_path.document = document
         document_path.file_size = stat.st_size
         document_path.modified_at = modified_at_of(path)
+        return previous_document
+
+    def _remove_missing_paths(self, seen_paths: set[str]) -> None:
+        """走査ルートから消えたパスと、参照されない文書を削除する."""
+
+        root = self.root.resolve()
+        stored_paths = self.session.scalars(select(DocumentPath)).all()
+        for document_path in stored_paths:
+            stored_path = Path(document_path.path)
+            try:
+                under_root = stored_path.is_relative_to(root)
+            except OSError, ValueError:
+                under_root = False
+            if not under_root or document_path.path in seen_paths:
+                continue
+            previous_document = document_path.document
+            self.session.delete(document_path)
+            self.session.flush()
+            self._delete_document_if_orphaned(previous_document)
+
+    def _delete_document_if_orphaned(
+        self, document: Document | None, except_document: Document | None = None
+    ) -> None:
+        """他のパスから参照されない旧文書と派生データを削除する."""
+
+        if document is None or document is except_document:
+            return
+        self.session.flush()
+        path_count = self.session.scalar(
+            select(func.count())
+            .select_from(DocumentPath)
+            .where(DocumentPath.document_id == document.id)
+        )
+        if path_count:
+            return
+        for document_text in list(document.texts):
+            clear_document_derivatives(self.session, document_text)
+        self.session.delete(document)

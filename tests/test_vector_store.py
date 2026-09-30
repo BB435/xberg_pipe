@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 pytest.importorskip("sqlite_vec")
@@ -56,3 +56,34 @@ def test_rebuild_and_search_embeddings_with_sqlite_vec(tmp_path: Path) -> None:
     assert len(results) == 1
     assert results[0].content == "人工知能の研究"
     assert results[0].distance == pytest.approx(0.0)
+
+
+def test_rechunk_removes_stale_vectors(tmp_path: Path) -> None:
+    database = tmp_path / "test.db"
+    engine = create_engine(f"sqlite:///{database.as_posix()}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        document = Document(id="a" * 64, extension=".txt", status="extracted")
+        document_text = DocumentText(
+            document=document, extractor="xberg", extracted_text="人工知能の研究"
+        )
+        session.add(document_text)
+        replace_document_chunks(session, document_text)
+        session.commit()
+
+    config = EmbeddingConfig()
+    rebuild_embeddings(database, config, FakeEncoder())
+
+    with Session(engine) as session:
+        document_text = session.scalar(select(DocumentText))
+        assert document_text is not None
+        document_text.extracted_text = "料理のレシピ"
+        replace_document_chunks(session, document_text)
+        session.commit()
+
+    assert (
+        search_embeddings(
+            database, "AI", top_k=10, config=config, encoder=FakeEncoder()
+        )
+        == []
+    )
