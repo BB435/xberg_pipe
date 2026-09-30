@@ -11,10 +11,12 @@ from xberg_pipe.chunking import ChunkingConfig, rebuild_all_chunks
 from xberg_pipe.db import DB_PATH, create_db_engine, init_db
 from xberg_pipe.keywording import DEFAULT_MODEL, RURI_MODELS, KeywordConfig
 from xberg_pipe.models import (
+    ChunkEmbedding,
     Document,
     DocumentChunk,
     DocumentKeyword,
     DocumentPath,
+    DocumentSummary,
     DocumentText,
 )
 from xberg_pipe.scan_extractor import BATCH_SIZE, ScanExtractor
@@ -76,6 +78,30 @@ def build_parser() -> argparse.ArgumentParser:
     keywords.add_argument("--device", help="例: cpu, cuda, cuda:0")
     keywords.add_argument("--batch-size", type=int, default=20)
 
+    summarize = subparsers.add_parser(
+        "summarize", help="ローカルLLMでファイルごとの要約を生成します。"
+    )
+    summarize.add_argument("--model", required=True, help="ローカルLLMのモデル名")
+    summarize.add_argument(
+        "--endpoint", default="http://127.0.0.1:11434/v1", help="OpenAI互換API"
+    )
+    summarize.add_argument("--api-key")
+    summarize.add_argument("--timeout", type=int, default=120)
+    summarize.add_argument("--max-output-tokens", type=int, default=800)
+
+    embed = subparsers.add_parser(
+        "embed", help="チャンクの検索用ベクトルをsqlite-vecへ保存します。"
+    )
+    embed.add_argument("--model", choices=RURI_MODELS, default=DEFAULT_MODEL)
+    embed.add_argument("--device", help="例: cpu, cuda, cuda:0")
+    embed.add_argument("--batch-size", type=int, default=32)
+
+    search = subparsers.add_parser("search", help="sqlite-vecで意味検索します。")
+    search.add_argument("query", help="検索文")
+    search.add_argument("--model", choices=RURI_MODELS, default=DEFAULT_MODEL)
+    search.add_argument("--device", help="例: cpu, cuda, cuda:0")
+    search.add_argument("--top-k", type=int, default=10)
+
     subparsers.add_parser("stats", help="SQLiteに保存された件数を表示します。")
     return parser
 
@@ -125,6 +151,8 @@ def _run_stats(session: Session) -> int:
         ("texts", DocumentText),
         ("chunks", DocumentChunk),
         ("keywords", DocumentKeyword),
+        ("summaries", DocumentSummary),
+        ("embeddings", ChunkEmbedding),
     )
     for label, model in tables:
         count = session.scalar(select(func.count()).select_from(model))
@@ -152,6 +180,49 @@ def _run_keywords(args: argparse.Namespace, session: Session) -> int:
     return 0
 
 
+def _run_summarize(args: argparse.Namespace, session: Session) -> int:
+    from xberg_pipe.summarization import SummaryConfig, rebuild_all_summaries
+
+    config = SummaryConfig(
+        model_name=args.model,
+        endpoint=args.endpoint,
+        api_key=args.api_key,
+        timeout_seconds=args.timeout,
+        max_output_tokens=args.max_output_tokens,
+    )
+    result = rebuild_all_summaries(session, config)
+    print(f"処理文書={result.documents} 失敗={result.failed} スキップ={result.skipped}")
+    return 1 if result.failed else 0
+
+
+def _run_embed(args: argparse.Namespace) -> int:
+    from xberg_pipe.vector_store import EmbeddingConfig, rebuild_embeddings
+
+    config = EmbeddingConfig(
+        model_name=args.model, device=args.device, batch_size=args.batch_size
+    )
+    result = rebuild_embeddings(args.database, config)
+    print(f"生成ベクトル={result.chunks} モデル={config.model_name}")
+    return 0
+
+
+def _run_search(args: argparse.Namespace) -> int:
+    from xberg_pipe.vector_store import EmbeddingConfig, search_embeddings
+
+    config = EmbeddingConfig(model_name=args.model, device=args.device)
+    results = search_embeddings(
+        args.database, args.query, top_k=args.top_k, config=config
+    )
+    for rank, item in enumerate(results, start=1):
+        preview = " ".join(item.content.split())[:160]
+        print(
+            f"{rank}. distance={item.distance:.4f} "
+            f"document={item.document_id} path={item.path or '-'}"
+        )
+        print(f"   {preview}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -173,6 +244,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return _run_chunk(args, session)
             if args.command == "keywords":
                 return _run_keywords(args, session)
+            if args.command == "summarize":
+                return _run_summarize(args, session)
+            if args.command == "embed":
+                return _run_embed(args)
+            if args.command == "search":
+                return _run_search(args)
             if args.command == "stats":
                 return _run_stats(session)
     except (OSError, RuntimeError, ValueError) as error:

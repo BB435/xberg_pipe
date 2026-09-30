@@ -20,6 +20,11 @@ keywords = [
     "sentence-transformers>=3.4.1",
     "unidic-lite>=1.0.8",
 ]
+vectors = [
+    "sentence-transformers>=3.4.1",
+    "sqlite-vec>=0.1.6",
+]
+all = ["xberg-pipe[keywords, vectors]"]
 
 [dependency-groups]
 dev = [

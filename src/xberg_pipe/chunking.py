@@ -5,7 +5,13 @@ from dataclasses import dataclass
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from xberg_pipe.models import DocumentChunk, DocumentKeyword, DocumentText
+from xberg_pipe.models import (
+    ChunkEmbedding,
+    DocumentChunk,
+    DocumentKeyword,
+    DocumentSummary,
+    DocumentText,
+)
 
 CHUNKER_VERSION = "ja-v1"
 DEFAULT_TARGET_CHARS = 1_200
@@ -125,6 +131,12 @@ def replace_document_chunks(
     """指定した抽出テキストの既存チャンクを置き換える."""
 
     session.flush()
+    old_chunk_ids = select(DocumentChunk.id).where(
+        DocumentChunk.document_text_id == document_text.id
+    )
+    session.execute(
+        delete(ChunkEmbedding).where(ChunkEmbedding.chunk_id.in_(old_chunk_ids))
+    )
     session.execute(
         delete(DocumentChunk).where(DocumentChunk.document_text_id == document_text.id)
     )
@@ -132,6 +144,11 @@ def replace_document_chunks(
     session.execute(
         delete(DocumentKeyword).where(
             DocumentKeyword.document_text_id == document_text.id
+        )
+    )
+    session.execute(
+        delete(DocumentSummary).where(
+            DocumentSummary.document_text_id == document_text.id
         )
     )
     chunks = chunk_text(document_text.extracted_text, config)

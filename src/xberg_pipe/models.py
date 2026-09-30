@@ -68,6 +68,9 @@ class DocumentText(Base):
         cascade="all, delete-orphan",
         order_by="DocumentKeyword.rank",
     )
+    summaries: Mapped[list[DocumentSummary]] = relationship(
+        back_populates="document_text", cascade="all, delete-orphan"
+    )
 
 
 class DocumentChunk(Base):
@@ -114,3 +117,41 @@ class DocumentKeyword(Base):
     score: Mapped[float] = mapped_column(Float)
 
     document_text: Mapped[DocumentText] = relationship(back_populates="keywords")
+
+
+class DocumentSummary(Base):
+    """ローカルLLMで生成したファイル単位の要約."""
+
+    __tablename__ = "document_summaries"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_text_id", "model_name", "prompt_version", name="uq_text_summary"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    document_text_id: Mapped[int] = mapped_column(
+        ForeignKey("document_texts.id", ondelete="CASCADE"), index=True
+    )
+    model_name: Mapped[str] = mapped_column(String(200))
+    endpoint: Mapped[str] = mapped_column(String(500))
+    prompt_version: Mapped[str] = mapped_column(String(20))
+    summary: Mapped[str] = mapped_column(Text)
+
+    document_text: Mapped[DocumentText] = relationship(back_populates="summaries")
+
+
+class ChunkEmbedding(Base):
+    """sqlite-vec内のベクトルに対応する生成情報."""
+
+    __tablename__ = "chunk_embeddings"
+    __table_args__ = (
+        UniqueConstraint("chunk_id", "model_name", name="uq_chunk_embedding_model"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chunk_id: Mapped[int] = mapped_column(
+        ForeignKey("document_chunks.id", ondelete="CASCADE"), index=True
+    )
+    model_name: Mapped[str] = mapped_column(String(200), index=True)
+    dimensions: Mapped[int]
