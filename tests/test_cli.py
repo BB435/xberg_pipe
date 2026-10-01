@@ -1,6 +1,16 @@
 from pathlib import Path
 
-from xberg_pipe.cli import main
+from xberg_pipe.cli import build_parser, main
+
+
+def test_summarize_defaults_to_small_ollama_model() -> None:
+    args = build_parser().parse_args(["summarize"])
+
+    assert args.model == "qwen3.5:4b"
+    assert args.host == "http://127.0.0.1:11434"
+    assert args.context_window == 16_384
+    assert args.max_output_tokens == 512
+    assert args.think is False
 
 
 def test_init_db_and_stats(tmp_path: Path, capsys) -> None:

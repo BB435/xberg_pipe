@@ -1,6 +1,4 @@
-import json
-import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -12,6 +10,9 @@ from xberg_pipe.chunking import clean_extracted_text
 from xberg_pipe.models import DocumentSummary, DocumentText
 
 PROMPT_VERSION = "ja-v1"
+DEFAULT_SUMMARY_MODEL = "qwen3.5:4b"
+DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
+DEFAULT_CONTEXT_WINDOW = 16_384
 SYSTEM_PROMPT = (
     "あなたは日本語文書の要約者です。原文にない情報を加えず、固有名詞、数値、"
     "結論、重要な条件を保持して簡潔な日本語で要約してください。"
@@ -20,21 +21,37 @@ SYSTEM_PROMPT = (
 
 @dataclass(frozen=True, slots=True)
 class SummaryConfig:
-    model_name: str
-    endpoint: str = "http://127.0.0.1:11434/v1"
-    api_key: str | None = None
-    timeout_seconds: int = 120
-    max_output_tokens: int = 800
+    """小型Ollamaモデル向けの要約設定."""
+
+    model_name: str = DEFAULT_SUMMARY_MODEL
+    host: str = DEFAULT_OLLAMA_HOST
+    timeout_seconds: int = 180
+    max_output_tokens: int = 512
+    context_window: int = DEFAULT_CONTEXT_WINDOW
     temperature: float = 0.1
-    reduce_group_size: int = 8
+    reduce_group_size: int = 6
+    think: bool = False
+    keep_alive: str = "10m"
 
     def __post_init__(self) -> None:
         if not self.model_name.strip():
             raise ValueError("model_name is required")
-        if self.timeout_seconds <= 0 or self.max_output_tokens <= 0:
-            raise ValueError("timeout and max_output_tokens must be positive")
+        if not self.host.strip():
+            raise ValueError("host is required")
+        if (
+            self.timeout_seconds <= 0
+            or self.max_output_tokens <= 0
+            or self.context_window <= 0
+        ):
+            raise ValueError(
+                "timeout, max_output_tokens and context_window must be positive"
+            )
+        if not 0.0 <= self.temperature <= 2.0:
+            raise ValueError("temperature must be between 0 and 2")
         if self.reduce_group_size < 2:
             raise ValueError("reduce_group_size must be at least 2")
+        if not self.keep_alive.strip():
+            raise ValueError("keep_alive is required")
 
 
 @dataclass(slots=True)
@@ -48,41 +65,64 @@ class SummaryClient(Protocol):
     def complete(self, system: str, user: str) -> str: ...
 
 
-class OpenAICompatibleClient:
-    """Ollama、vLLM、llama.cpp等のOpenAI互換ローカルAPIクライアント."""
+class OllamaMessage(Protocol):
+    content: str | None
 
-    def __init__(self, config: SummaryConfig) -> None:
+
+class OllamaChatResponse(Protocol):
+    message: OllamaMessage
+
+
+class OllamaChatClient(Protocol):
+    def chat(
+        self,
+        *,
+        model: str,
+        messages: Sequence[Mapping[str, str]],
+        think: bool,
+        options: Mapping[str, int | float],
+        keep_alive: str,
+    ) -> OllamaChatResponse: ...
+
+
+class OllamaSummaryClient:
+    """公式Ollama Pythonクライアントを利用する要約クライアント."""
+
+    def __init__(
+        self,
+        config: SummaryConfig,
+        *,
+        client: OllamaChatClient | None = None,
+    ) -> None:
         self.config = config
+        if client is None:
+            try:
+                from ollama import Client
+            except ImportError as error:
+                raise RuntimeError(
+                    "Ollama依存がありません。uv sync --extra llm を実行してください。"
+                ) from error
+            client = Client(host=config.host, timeout=config.timeout_seconds)
+        self.client = client
 
     def complete(self, system: str, user: str) -> str:
-        body = json.dumps(
-            {
-                "model": self.config.model_name,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
+        response = self.client.chat(
+            model=self.config.model_name,
+            messages=(
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ),
+            think=self.config.think,
+            options={
                 "temperature": self.config.temperature,
-                "max_tokens": self.config.max_output_tokens,
+                "num_ctx": self.config.context_window,
+                "num_predict": self.config.max_output_tokens,
             },
-            ensure_ascii=False,
-        ).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
-        if self.config.api_key:
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
-        request = urllib.request.Request(
-            self.config.endpoint.rstrip("/") + "/chat/completions",
-            data=body,
-            headers=headers,
-            method="POST",
+            keep_alive=self.config.keep_alive,
         )
-        with urllib.request.urlopen(
-            request, timeout=self.config.timeout_seconds
-        ) as response:
-            payload = json.load(response)
-        content = payload["choices"][0]["message"]["content"].strip()
+        content = (response.message.content or "").strip()
         if not content:
-            raise RuntimeError("ローカルLLMが空の要約を返しました")
+            raise RuntimeError("Ollamaが空の要約を返しました")
         return content
 
 
@@ -138,7 +178,7 @@ def replace_document_summary(
         DocumentSummary(
             document_text=document_text,
             model_name=config.model_name,
-            endpoint=config.endpoint,
+            endpoint=config.host,
             prompt_version=PROMPT_VERSION,
             summary=summary,
         )
@@ -151,7 +191,7 @@ def rebuild_all_summaries(
     client: SummaryClient | None = None,
     progress: Callable[[SummaryResult], None] | None = None,
 ) -> SummaryResult:
-    client = client or OpenAICompatibleClient(config)
+    client = client or OllamaSummaryClient(config)
     result = SummaryResult()
     ids = session.scalars(select(DocumentText.id).order_by(DocumentText.id)).all()
     for document_text_id in ids:

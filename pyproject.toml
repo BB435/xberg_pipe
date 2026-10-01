@@ -28,7 +28,11 @@ vis = [
     "fastapi[standard]>=0.142.2",
 ]
 
-all = ["xberg-pipe[keywords, vectors, vis]"]
+llm = [
+    "ollama>=0.6.3",
+]
+
+all = ["xberg-pipe[keywords, vectors, vis, llm]"]
 
 [dependency-groups]
 dev = [

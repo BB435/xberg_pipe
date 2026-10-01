@@ -20,6 +20,11 @@ from xberg_pipe.models import (
     DocumentText,
 )
 from xberg_pipe.scan_extractor import BATCH_SIZE, ScanExtractor
+from xberg_pipe.summarization import (
+    DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_SUMMARY_MODEL,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,15 +86,21 @@ def build_parser() -> argparse.ArgumentParser:
     keywords.add_argument("--batch-size", type=int, default=20)
 
     summarize = subparsers.add_parser(
-        "summarize", help="ローカルLLMでファイルごとの要約を生成します。"
+        "summarize", help="Ollamaでファイルごとの要約を生成します。"
     )
-    summarize.add_argument("--model", required=True, help="ローカルLLMのモデル名")
     summarize.add_argument(
-        "--endpoint", default="http://127.0.0.1:11434/v1", help="OpenAI互換API"
+        "--model",
+        default=DEFAULT_SUMMARY_MODEL,
+        help="Ollamaモデル (例: qwen3.5:4b, gemma4:e2b)",
     )
-    summarize.add_argument("--api-key")
-    summarize.add_argument("--timeout", type=int, default=120)
-    summarize.add_argument("--max-output-tokens", type=int, default=800)
+    summarize.add_argument("--host", default=DEFAULT_OLLAMA_HOST, help="Ollamaホスト")
+    summarize.add_argument("--timeout", type=int, default=180)
+    summarize.add_argument("--max-output-tokens", type=int, default=512)
+    summarize.add_argument("--context-window", type=int, default=DEFAULT_CONTEXT_WINDOW)
+    summarize.add_argument("--temperature", type=float, default=0.1)
+    summarize.add_argument("--reduce-group-size", type=int, default=6)
+    summarize.add_argument("--think", action="store_true", help="思考モードを有効化")
+    summarize.add_argument("--keep-alive", default="10m")
 
     embed = subparsers.add_parser(
         "embed", help="チャンクの検索用ベクトルをsqlite-vecへ保存します。"
@@ -222,10 +233,14 @@ def _run_summarize(args: argparse.Namespace, session: Session) -> int:
 
     config = SummaryConfig(
         model_name=args.model,
-        endpoint=args.endpoint,
-        api_key=args.api_key,
+        host=args.host,
         timeout_seconds=args.timeout,
         max_output_tokens=args.max_output_tokens,
+        context_window=args.context_window,
+        temperature=args.temperature,
+        reduce_group_size=args.reduce_group_size,
+        think=args.think,
+        keep_alive=args.keep_alive,
     )
     print("要約生成を開始します。", flush=True)
     result = rebuild_all_summaries(
