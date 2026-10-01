@@ -16,10 +16,10 @@ class Document(Base):
     status: Mapped[str] = mapped_column(String(20), default="hash")
 
     paths: Mapped[list[DocumentPath]] = relationship(
-        back_populates="document", cascade="all, delete"
+        back_populates="document", cascade="all, delete-orphan"
     )
     texts: Mapped[list[DocumentText]] = relationship(
-        back_populates="document", cascade="all, delete"
+        back_populates="document", cascade="all, delete-orphan"
     )
 
 
@@ -34,7 +34,7 @@ class DocumentPath(Base):
     file_size: Mapped[int]
     modified_at: Mapped[dt.datetime]
     updated_at: Mapped[dt.datetime] = mapped_column(
-        server_default=func.now(), server_onupdate=func.now()
+        server_default=func.now(), onupdate=func.now()
     )
 
     document: Mapped[Document] = relationship(back_populates="paths")
@@ -94,6 +94,9 @@ class DocumentChunk(Base):
     chunker_version: Mapped[str] = mapped_column(String(20))
 
     document_text: Mapped[DocumentText] = relationship(back_populates="chunks")
+    embeddings: Mapped[list[ChunkEmbedding]] = relationship(
+        back_populates="chunk", cascade="all, delete-orphan"
+    )
 
 
 class DocumentKeyword(Base):
@@ -155,3 +158,5 @@ class ChunkEmbedding(Base):
     )
     model_name: Mapped[str] = mapped_column(String(200), index=True)
     dimensions: Mapped[int]
+
+    chunk: Mapped[DocumentChunk] = relationship(back_populates="embeddings")

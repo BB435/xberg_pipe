@@ -3,16 +3,11 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from xberg_pipe.models import (
-    ChunkEmbedding,
-    DocumentChunk,
-    DocumentKeyword,
-    DocumentSummary,
-    DocumentText,
-)
+from xberg_pipe.models import DocumentChunk, DocumentText
+from xberg_pipe.repository import delete_document_derivatives
 
 CHUNKER_VERSION = "ja-v1"
 DEFAULT_TARGET_CHARS = 1_200
@@ -132,7 +127,7 @@ def replace_document_chunks(
     """指定した抽出テキストの既存チャンクを置き換える."""
 
     session.flush()
-    clear_document_derivatives(session, document_text)
+    delete_document_derivatives(session, document_text)
     chunks = chunk_text(document_text.extracted_text, config)
     session.add_all(
         DocumentChunk(
@@ -145,41 +140,6 @@ def replace_document_chunks(
         for index, content in enumerate(chunks)
     )
     return len(chunks)
-
-
-def clear_document_derivatives(session: Session, document_text: DocumentText) -> None:
-    """抽出テキストから生成された派生データを削除する."""
-
-    session.flush()
-    old_chunk_ids = list(
-        session.scalars(
-            select(DocumentChunk.id).where(
-                DocumentChunk.document_text_id == document_text.id
-            )
-        )
-    )
-    if old_chunk_ids:
-        # sqlite-vecの仮想表には外部キー制約がないため、実体も明示的に消す。
-        from xberg_pipe.vector_store import delete_chunk_vectors
-
-        delete_chunk_vectors(session.connection(), old_chunk_ids)
-    session.execute(
-        delete(ChunkEmbedding).where(ChunkEmbedding.chunk_id.in_(old_chunk_ids))
-    )
-    session.execute(
-        delete(DocumentChunk).where(DocumentChunk.document_text_id == document_text.id)
-    )
-    # 本文が変わった場合、以前のキーワードを残さない。
-    session.execute(
-        delete(DocumentKeyword).where(
-            DocumentKeyword.document_text_id == document_text.id
-        )
-    )
-    session.execute(
-        delete(DocumentSummary).where(
-            DocumentSummary.document_text_id == document_text.id
-        )
-    )
 
 
 def rebuild_all_chunks(

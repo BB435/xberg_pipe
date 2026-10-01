@@ -5,7 +5,15 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from xberg_pipe.chunking import replace_document_chunks
-from xberg_pipe.models import Base, Document, DocumentChunk, DocumentText
+from xberg_pipe.models import (
+    Base,
+    ChunkEmbedding,
+    Document,
+    DocumentChunk,
+    DocumentKeyword,
+    DocumentSummary,
+    DocumentText,
+)
 from xberg_pipe.scan_extractor import ScanExtractor
 
 
@@ -44,12 +52,67 @@ def test_changed_extracted_text_invalidates_chunks(tmp_path: Path) -> None:
         document_text = session.scalar(select(DocumentText))
         assert document_text is not None
         replace_document_chunks(session, document_text)
+        session.flush()
+        chunk = session.scalar(select(DocumentChunk))
+        assert chunk is not None
+        document_text.keywords.append(
+            DocumentKeyword(model_name="test", rank=1, keyword="旧", score=1.0)
+        )
+        document_text.summaries.append(
+            DocumentSummary(
+                model_name="test",
+                endpoint="local",
+                prompt_version="test",
+                summary="古い要約",
+            )
+        )
+        chunk.embeddings.append(ChunkEmbedding(model_name="test", dimensions=1))
         session.commit()
 
         extractor._save(source, "更新された抽出結果です。")
         session.commit()
 
-        assert session.scalar(select(func.count()).select_from(DocumentChunk)) == 0
+        for model in (
+            DocumentChunk,
+            DocumentKeyword,
+            DocumentSummary,
+            ChunkEmbedding,
+        ):
+            assert session.scalar(select(func.count()).select_from(model)) == 0
+
+
+def test_failed_file_is_retried_even_when_metadata_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "document.txt"
+    source.write_text("再試行する内容", encoding="utf-8")
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        extractor = ScanExtractor(session, tmp_path)
+        extractor._mark_failed(source)
+
+        assert extractor._is_unchanged(source) is False
+
+
+def test_failure_does_not_hide_existing_text_for_same_content(tmp_path: Path) -> None:
+    source = tmp_path / "document.txt"
+    source.write_text("同一内容", encoding="utf-8")
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        extractor = ScanExtractor(session, tmp_path)
+        extractor._save(source, "保存済みの抽出結果")
+        session.commit()
+
+        extractor._mark_failed(source)
+
+        document = session.scalar(select(Document))
+        assert document is not None
+        assert document.status == "extracted"
+        assert extractor._is_unchanged(source) is True
 
 
 def test_changed_file_removes_orphaned_previous_document(tmp_path: Path) -> None:

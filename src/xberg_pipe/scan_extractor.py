@@ -9,9 +9,13 @@ from loguru import logger
 from sqlalchemy import func, select
 from xberg import ExtractInput, ExtractionConfig, OcrConfig, extract_batch
 
-from xberg_pipe.chunking import clear_document_derivatives
 from xberg_pipe.models import Document, DocumentPath, DocumentText
-from xberg_pipe.repository import get_document_path, get_or_create_document
+from xberg_pipe.repository import (
+    delete_document_derivatives,
+    get_document_path,
+    get_document_text,
+    get_or_create_document,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -109,7 +113,9 @@ class ScanExtractor:
         stat = path.stat()
         modified_at = modified_at_of(path)
         return bool(
-            document_path.modified_at == modified_at
+            document_path.document.status == STATUS_EXTRACTED
+            and get_document_text(document_path.document, EXTRACTOR_NAME) is not None
+            and document_path.modified_at == modified_at
             and document_path.file_size == stat.st_size
         )
 
@@ -185,14 +191,12 @@ class ScanExtractor:
 
         previous_document = self._save_path(document, path)
 
-        document_text = next(
-            (item for item in document.texts if item.extractor == EXTRACTOR_NAME), None
-        )
+        document_text = get_document_text(document, EXTRACTOR_NAME)
         if document_text is None:
             document_text = DocumentText(extractor=EXTRACTOR_NAME, document=document)
             self.session.add(document_text)
         elif document_text.extracted_text != text:
-            clear_document_derivatives(self.session, document_text)
+            delete_document_derivatives(self.session, document_text)
         document_text.extracted_text = text
         self._delete_document_if_orphaned(previous_document, except_document=document)
 
@@ -203,7 +207,8 @@ class ScanExtractor:
             document = get_or_create_document(
                 self.session, sha256_of(path), path.suffix.lower()
             )
-            document.status = STATUS_FAILED
+            if get_document_text(document, EXTRACTOR_NAME) is None:
+                document.status = STATUS_FAILED
             previous_document = self._save_path(document, path)
             self._delete_document_if_orphaned(
                 previous_document, except_document=document
@@ -261,5 +266,5 @@ class ScanExtractor:
         if path_count:
             return
         for document_text in list(document.texts):
-            clear_document_derivatives(self.session, document_text)
+            delete_document_derivatives(self.session, document_text)
         self.session.delete(document)
