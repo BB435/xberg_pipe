@@ -161,8 +161,7 @@ def clear_document_derivatives(session: Session, document_text: DocumentText) ->
         # sqlite-vecの仮想表には外部キー制約がないため、実体も明示的に消す。
         from xberg_pipe.vector_store import delete_chunk_vectors
 
-        raw_connection = session.connection().connection.driver_connection
-        delete_chunk_vectors(raw_connection, old_chunk_ids)
+        delete_chunk_vectors(session.connection(), old_chunk_ids)
     session.execute(
         delete(ChunkEmbedding).where(ChunkEmbedding.chunk_id.in_(old_chunk_ids))
     )
