@@ -1,5 +1,6 @@
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sqlalchemy import delete, select
@@ -185,6 +186,7 @@ def rebuild_all_chunks(
     session: Session,
     config: ChunkingConfig | None = None,
     batch_size: int = 100,
+    progress: Callable[[ChunkingResult], None] | None = None,
 ) -> ChunkingResult:
     """SQLite内の全抽出テキストを再チャンキングする."""
 
@@ -200,6 +202,8 @@ def rebuild_all_chunks(
     for document_text in document_texts:
         result.chunks += replace_document_chunks(session, document_text, config)
         result.documents += 1
+        if progress is not None:
+            progress(result)
         if result.documents % batch_size == 0:
             session.commit()
     session.commit()

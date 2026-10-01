@@ -48,7 +48,17 @@ def test_rebuild_and_search_embeddings_with_sqlite_vec(tmp_path: Path) -> None:
         session.commit()
 
     config = EmbeddingConfig(batch_size=2)
-    assert rebuild_embeddings(database, config, FakeEncoder()).chunks == 2
+    progress = []
+    assert (
+        rebuild_embeddings(
+            database,
+            config,
+            FakeEncoder(),
+            progress=lambda current: progress.append(current.chunks),
+        ).chunks
+        == 2
+    )
+    assert progress == [2]
     results = search_embeddings(
         database, "AI", top_k=1, config=config, encoder=FakeEncoder()
     )

@@ -1,5 +1,6 @@
 import json
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -148,6 +149,7 @@ def rebuild_all_summaries(
     session: Session,
     config: SummaryConfig,
     client: SummaryClient | None = None,
+    progress: Callable[[SummaryResult], None] | None = None,
 ) -> SummaryResult:
     client = client or OpenAICompatibleClient(config)
     result = SummaryResult()
@@ -160,6 +162,8 @@ def rebuild_all_summaries(
         )
         if document_text is None or not document_text.extracted_text.strip():
             result.skipped += 1
+            if progress is not None:
+                progress(result)
             continue
         try:
             summary = summarize_document(document_text, client, config)
@@ -170,4 +174,6 @@ def rebuild_all_summaries(
             session.rollback()
             result.failed += 1
             logger.exception(f"Could not summarize document_text={document_text_id}")
+        if progress is not None:
+            progress(result)
     return result

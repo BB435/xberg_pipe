@@ -46,10 +46,14 @@ def test_rebuild_all_keywords_saves_file_level_result(tmp_path: Path) -> None:
         replace_document_chunks(session, document_text)
         session.commit()
 
+        progress = []
         result = rebuild_all_keywords(
             session,
             config=KeywordConfig(model_name="test/model", top_n=3),
             extractor=FakeExtractor(),
+            progress=lambda current: progress.append(
+                (current.documents, current.keywords, current.skipped)
+            ),
         )
 
         stored = session.scalars(
@@ -59,3 +63,4 @@ def test_rebuild_all_keywords_saves_file_level_result(tmp_path: Path) -> None:
         assert result.keywords == 2
         assert [keyword.keyword for keyword in stored] == ["人工知能", "機械学習"]
         assert all(keyword.model_name == "test/model" for keyword in stored)
+        assert progress == [(1, 2, 0)]

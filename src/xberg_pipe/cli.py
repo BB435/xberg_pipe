@@ -130,12 +130,18 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
         ),
         force_ocr=args.force_ocr,
     )
+    print("走査を開始します。", flush=True)
     result = asyncio.run(
         ScanExtractor(
             session,
             root,
             extraction_config=extraction_config,
             batch_size=args.batch_size,
+            progress=lambda current: print(
+                f"走査中: 検出={current.discovered} 抽出={current.extracted} "
+                f"スキップ={current.skipped} 失敗={current.failed}",
+                flush=True,
+            ),
         ).scan()
     )
     print(
@@ -150,7 +156,17 @@ def _run_chunk(args: argparse.Namespace, session: Session) -> int:
         target_chars=args.target_chars,
         overlap_chars=args.overlap_chars,
     )
-    result = rebuild_all_chunks(session, config, batch_size=args.batch_size)
+    print("チャンク生成を開始します。", flush=True)
+    result = rebuild_all_chunks(
+        session,
+        config,
+        batch_size=args.batch_size,
+        progress=lambda current: print(
+            f"チャンク生成中: 処理文書={current.documents} "
+            f"生成チャンク={current.chunks}",
+            flush=True,
+        ),
+    )
     print(f"処理文書={result.documents} 生成チャンク={result.chunks}")
     return 0
 
@@ -183,7 +199,17 @@ def _run_keywords(args: argparse.Namespace, session: Session) -> int:
         diversity=args.diversity,
         device=args.device,
     )
-    result = rebuild_all_keywords(session, config=config, batch_size=args.batch_size)
+    print("キーワード抽出を開始します。", flush=True)
+    result = rebuild_all_keywords(
+        session,
+        config=config,
+        batch_size=args.batch_size,
+        progress=lambda current: print(
+            f"キーワード抽出中: 処理文書={current.documents} "
+            f"保存キーワード={current.keywords} スキップ={current.skipped}",
+            flush=True,
+        ),
+    )
     print(
         f"処理文書={result.documents} 保存キーワード={result.keywords} "
         f"スキップ={result.skipped}"
@@ -201,7 +227,16 @@ def _run_summarize(args: argparse.Namespace, session: Session) -> int:
         timeout_seconds=args.timeout,
         max_output_tokens=args.max_output_tokens,
     )
-    result = rebuild_all_summaries(session, config)
+    print("要約生成を開始します。", flush=True)
+    result = rebuild_all_summaries(
+        session,
+        config,
+        progress=lambda current: print(
+            f"要約生成中: 処理文書={current.documents} "
+            f"失敗={current.failed} スキップ={current.skipped}",
+            flush=True,
+        ),
+    )
     print(f"処理文書={result.documents} 失敗={result.failed} スキップ={result.skipped}")
     return 1 if result.failed else 0
 
@@ -212,7 +247,14 @@ def _run_embed(args: argparse.Namespace) -> int:
     config = EmbeddingConfig(
         model_name=args.model, device=args.device, batch_size=args.batch_size
     )
-    result = rebuild_embeddings(args.database, config)
+    print("埋め込み生成を開始します。", flush=True)
+    result = rebuild_embeddings(
+        args.database,
+        config,
+        progress=lambda current: print(
+            f"埋め込み生成中: 生成ベクトル={current.chunks}", flush=True
+        ),
+    )
     print(f"生成ベクトル={result.chunks} モデル={config.model_name}")
     return 0
 

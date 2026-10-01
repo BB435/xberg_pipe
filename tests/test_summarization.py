@@ -34,10 +34,14 @@ def test_rebuild_all_summaries_saves_reduced_summary(tmp_path: Path) -> None:
         replace_document_chunks(session, document_text)
         session.commit()
 
+        progress = []
         result = rebuild_all_summaries(
             session,
             SummaryConfig(model_name="local/test"),
             client=client,
+            progress=lambda current: progress.append(
+                (current.documents, current.failed, current.skipped)
+            ),
         )
 
         summary = session.scalar(select(DocumentSummary))
@@ -46,3 +50,4 @@ def test_rebuild_all_summaries_saves_reduced_summary(tmp_path: Path) -> None:
         assert summary is not None
         assert summary.summary == f"要約{client.calls}"
         assert client.calls >= 3
+        assert progress == [(1, 0, 0)]

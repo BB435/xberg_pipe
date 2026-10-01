@@ -1,6 +1,6 @@
 import datetime as dt
 import hashlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -89,6 +89,7 @@ class ScanExtractor:
         root: Path,
         extraction_config: ExtractionConfig | None = None,
         batch_size: int = BATCH_SIZE,
+        progress: Callable[[ScanResult], None] | None = None,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
@@ -98,6 +99,7 @@ class ScanExtractor:
         self.extraction_config = extraction_config or ExtractionConfig(
             ocr=OcrConfig(backend="paddleocr", language=["jpn", "en"])
         )
+        self.progress = progress
 
     def _is_unchanged(self, path: Path) -> bool:
         """ファイルが変化したかをチェックする."""
@@ -122,6 +124,8 @@ class ScanExtractor:
             changed_paths = [path for path in paths if not self._is_unchanged(path)]
             result.skipped += len(paths) - len(changed_paths)
             if not changed_paths:
+                if self.progress is not None:
+                    self.progress(result)
                 continue
 
             try:
@@ -139,6 +143,8 @@ class ScanExtractor:
                 for path in changed_paths:
                     result.failed += 1
                     self._mark_failed(path)
+                if self.progress is not None:
+                    self.progress(result)
                 continue
 
             errors_by_index = {error.index: error for error in extraction.errors}
@@ -164,6 +170,8 @@ class ScanExtractor:
                     self.session.rollback()
                     result.failed += 1
                     logger.exception(f"Could not save extraction result for {path}")
+            if self.progress is not None:
+                self.progress(result)
 
         self._remove_missing_paths(seen_paths)
         self.session.commit()

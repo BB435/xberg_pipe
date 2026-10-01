@@ -1,6 +1,6 @@
 import sqlite3
 import struct
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -147,6 +147,7 @@ def rebuild_embeddings(
     db_path: str | Path,
     config: EmbeddingConfig | None = None,
     encoder: Encoder | None = None,
+    progress: Callable[[EmbeddingResult], None] | None = None,
 ) -> EmbeddingResult:
     config = config or EmbeddingConfig()
     encoder = encoder or RuriEncoder(config)
@@ -185,6 +186,8 @@ def rebuild_embeddings(
                 ],
             )
             result.chunks += len(rows)
+            if progress is not None:
+                progress(result)
         connection.commit()
     finally:
         connection.close()

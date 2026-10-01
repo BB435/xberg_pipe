@@ -1,5 +1,5 @@
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -193,6 +193,7 @@ def rebuild_all_keywords(
     config: KeywordConfig | None = None,
     batch_size: int = 20,
     extractor: KeywordExtractor | None = None,
+    progress: Callable[[KeywordResult], None] | None = None,
 ) -> KeywordResult:
     """保存済み文書をKeyBERTで処理し、ファイル単位のキーワードを保存する."""
 
@@ -210,12 +211,16 @@ def rebuild_all_keywords(
     for document_text in session.scalars(statement):
         if not document_text.extracted_text.strip():
             result.skipped += 1
+            if progress is not None:
+                progress(result)
             continue
         keywords = extract_document_keywords(document_text, extractor, config)
         result.keywords += replace_document_keywords(
             session, document_text, keywords, config.model_name
         )
         result.documents += 1
+        if progress is not None:
+            progress(result)
         if result.documents % batch_size == 0:
             session.commit()
     session.commit()

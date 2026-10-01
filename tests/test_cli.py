@@ -22,4 +22,6 @@ def test_chunk_empty_database(tmp_path: Path, capsys) -> None:
 
     assert main(["--database", str(database), "chunk"]) == 0
 
-    assert "処理文書=0 生成チャンク=0" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "チャンク生成を開始します。" in output
+    assert "処理文書=0 生成チャンク=0" in output
