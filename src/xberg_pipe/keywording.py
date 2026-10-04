@@ -17,18 +17,6 @@ TOPIC_PREFIX = "トピック: "
 LIGHT_MODEL = "ja-yake-v1"
 
 _TARGET_POS = {"名詞", "形容詞"}
-_STOP_WORDS = {
-    "こと",
-    "これ",
-    "それ",
-    "ため",
-    "もの",
-    "よう",
-    "ところ",
-    "場合",
-    "以下",
-    "以上",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,19 +59,26 @@ class YakeKeywordExtractor:
     """日本語を分かち書きしてYAKEでキーフレーズを選ぶ。"""
 
     def __init__(self, max_ngram: int = 3) -> None:
-        from fugashi import Tagger
+        from ja_stopword_filter import JaStopwordFilter
+        from sudachipy import Dictionary, SplitMode
         from yake import KeywordExtractor
 
-        self._tagger = Tagger()
+        self._tokenizer = Dictionary(dict="full").tokenizer()
+        self._split_mode = SplitMode.C
+        self._stopwords = JaStopwordFilter()
         self._extractor_type = KeywordExtractor
         self._max_ngram = max_ngram
 
     def extract(self, text: str, top_n: int) -> list[tuple[str, float]]:
         phrases: list[str] = []
         parts: list[str] = []
-        for word in self._tagger(text):
-            surface = word.surface.strip()
-            if surface and getattr(word.feature, "pos1", "") in _TARGET_POS:
+        for word in self._tokenizer.tokenize(text, self._split_mode):
+            surface = word.surface().strip()
+            if (
+                surface
+                and word.part_of_speech()[0] in _TARGET_POS
+                and self._stopwords.remove([surface])
+            ):
                 parts.append(surface)
             elif parts:
                 phrases.append("".join(parts))
@@ -99,7 +94,12 @@ class YakeKeywordExtractor:
         seen: set[str] = set()
         for phrase, score in keywords:
             phrase = _JAPANESE_SPACES.sub("", phrase).strip()
-            if len(phrase) < 2 or phrase in seen or phrase not in text:
+            if (
+                len(phrase) < 2
+                or phrase in seen
+                or phrase not in text
+                or not self._stopwords.remove([phrase])
+            ):
                 continue
             seen.add(phrase)
             results.append((phrase, round(1 / (1 + float(score)), 6)))
@@ -112,10 +112,11 @@ class RuriKeyBertExtractor:
     def __init__(self, config: KeywordConfig) -> None:
         try:
             import numpy as np
-            from fugashi import Tagger
+            from ja_stopword_filter import JaStopwordFilter
             from keybert import KeyBERT
             from keybert.backend import BaseEmbedder
             from sklearn.feature_extraction.text import CountVectorizer
+            from sudachipy import Dictionary, SplitMode
 
             from xberg_pipe.fastembed_model import create_ruri_model
         except ImportError as error:
@@ -134,14 +135,16 @@ class RuriKeyBertExtractor:
 
         model = create_ruri_model(config.model_name, config.device)
         self._keybert = KeyBERT(model=RuriTopicEmbedder(model))
-        self._tagger = Tagger()
+        self._tokenizer = Dictionary(dict="full").tokenizer()
+        self._split_mode = SplitMode.C
+        self._stopwords = JaStopwordFilter()
         self._vectorizer_type = CountVectorizer
         self._config = config
 
     def _candidates(self, text: str) -> list[str]:
         tokens = [
-            (word.surface.strip(), getattr(word.feature, "pos1", ""))
-            for word in self._tagger(text)
+            (word.surface().strip(), word.part_of_speech()[0])
+            for word in self._tokenizer.tokenize(text, self._split_mode)
         ]
         counts: Counter[str] = Counter()
         for start in range(len(tokens)):
@@ -153,7 +156,7 @@ class RuriKeyBertExtractor:
                 candidate = "".join(parts)
                 if (
                     len(candidate) >= 2
-                    and candidate not in _STOP_WORDS
+                    and self._stopwords.remove([candidate])
                     and not candidate.isnumeric()
                 ):
                     counts[candidate] += 1

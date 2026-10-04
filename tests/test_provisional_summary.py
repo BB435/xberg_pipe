@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from xberg_pipe.models import Base, Document, DocumentSummary, DocumentText
 from xberg_pipe.provisional_summary import (
+    LEGACY_MODEL_NAME,
     MODEL_NAME,
     replace_provisional_summary,
     summarize_extractively,
@@ -19,6 +20,10 @@ def test_extractive_summary_uses_original_sentences_in_original_order() -> None:
     assert "重要な結論は採用です。" in summary
     assert "採用の条件は予算です。" in summary
     assert summary.index("重要な結論") < summary.index("採用の条件")
+
+
+def test_extractive_summary_keeps_unpunctuated_final_sentence() -> None:
+    assert summarize_extractively("結論です。最後の条件", []) == "結論です。最後の条件"
 
 
 def test_provisional_summary_replaces_only_its_own_row(tmp_path: Path) -> None:
@@ -38,6 +43,15 @@ def test_provisional_summary_replaces_only_its_own_row(tmp_path: Path) -> None:
                 endpoint="local",
                 prompt_version="test",
                 summary="LLM要約",
+            )
+        )
+        session.add(
+            DocumentSummary(
+                document_text=text,
+                model_name=LEGACY_MODEL_NAME,
+                endpoint="local",
+                prompt_version="extractive-v3",
+                summary="古い暫定要約",
             )
         )
         replace_provisional_summary(session, text, "暫定1")

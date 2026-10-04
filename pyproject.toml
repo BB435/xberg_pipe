@@ -8,10 +8,13 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "fugashi>=1.5.2",
+    "ja-stopword-filter>=0.3.0",
     "loguru>=0.7.3",
+    "numpy>=2.3.0",
     "sqlalchemy>=2.1.1",
-    "unidic-lite>=1.0.8",
+    "sudachidict-full>=20260723.1",
+    "sudachipy>=0.7.0",
+    "sumy>=0.13.0",
     "xberg>=1.3.0",
     "yake>=0.7.3",
 ]

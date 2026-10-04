@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from sqlalchemy import exists, func, select
+from sqlalchemy import exists, func, select, true
 from xberg import ExtractInput, ExtractionConfig, OcrConfig, extract_batch
 
 from xberg_pipe.models import Document, DocumentPath, DocumentSummary, DocumentText
@@ -123,6 +123,16 @@ class ScanExtractor:
 
     def _unchanged_paths(self, paths: list[Path]) -> set[str]:
         """一つのバッチの更新判定に必要なメタデータをまとめて読む."""
+
+        processed_clause = true()
+        if self.postprocess is not None:
+            from xberg_pipe.provisional_summary import MODEL_NAME, PROMPT_VERSION
+
+            processed_clause = exists().where(
+                DocumentSummary.document_text_id == DocumentText.id,
+                DocumentSummary.model_name == MODEL_NAME,
+                DocumentSummary.prompt_version == PROMPT_VERSION,
+            )
         resolved = {str(path.resolve()): path for path in paths}
         rows = self.session.execute(
             select(
@@ -131,11 +141,7 @@ class ScanExtractor:
                 DocumentPath.file_size,
                 Document.status,
                 DocumentText.id,
-                exists().where(
-                    DocumentSummary.document_text_id == DocumentText.id,
-                    DocumentSummary.model_name == "extractive-ja-v1",
-                    DocumentSummary.prompt_version == "extractive-v3",
-                ),
+                processed_clause,
             )
             .join(DocumentPath.document)
             .outerjoin(
@@ -150,7 +156,7 @@ class ScanExtractor:
             for stored_path, modified_at, file_size, status, text_id, processed in rows
             if status == STATUS_EXTRACTED
             and text_id is not None
-            and (self.postprocess is None or processed)
+            and processed
             and (stat := resolved[stored_path].stat()).st_size == file_size
             and dt.datetime.fromtimestamp(stat.st_mtime, dt.UTC).replace(tzinfo=None)
             == modified_at
