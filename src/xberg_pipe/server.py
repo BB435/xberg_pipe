@@ -108,7 +108,14 @@ def create_app(
     def keyword_search(
         q: str = Query(min_length=1), top_k: int = Query(default=10, ge=1, le=100)
     ) -> dict[str, object]:
-        pattern = f"%{q.strip()}%"
+        query = q.strip()
+        if not query:
+            raise HTTPException(status_code=422, detail="検索語を入力してください")
+        pattern = (
+            "%"
+            + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            + "%"
+        )
         path_column = _path_for_document(DocumentText.document_id)
         refined_keyword = aliased(DocumentKeyword)
         has_refined = (
@@ -128,18 +135,23 @@ def create_app(
                     func.max(DocumentKeyword.score).label("score"),
                     func.group_concat(DocumentKeyword.keyword, ", ").label("keywords"),
                 )
-                .join(DocumentKeyword)
-                .where(
-                    or_(
-                        DocumentKeyword.model_name == model_name,
-                        and_(
-                            DocumentKeyword.model_name == LIGHT_MODEL,
-                            ~has_refined,
+                .outerjoin(
+                    DocumentKeyword,
+                    and_(
+                        DocumentKeyword.document_text_id == DocumentText.id,
+                        or_(
+                            DocumentKeyword.model_name == model_name,
+                            and_(
+                                DocumentKeyword.model_name == LIGHT_MODEL,
+                                ~has_refined,
+                            ),
                         ),
                     ),
+                )
+                .where(
                     or_(
-                        DocumentKeyword.keyword.contains(q.strip()),
-                        DocumentText.extracted_text.like(pattern),
+                        DocumentKeyword.keyword.contains(query, autoescape=True),
+                        DocumentText.extracted_text.like(pattern, escape="\\"),
                     ),
                 )
                 .group_by(DocumentText.id)
@@ -147,7 +159,7 @@ def create_app(
                 .limit(top_k)
             ).all()
         return {
-            "query": q,
+            "query": query,
             "mode": "keyword",
             "results": [
                 {

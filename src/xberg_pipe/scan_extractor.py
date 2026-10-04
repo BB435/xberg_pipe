@@ -95,6 +95,7 @@ class ScanExtractor:
         batch_size: int = BATCH_SIZE,
         progress: Callable[[ScanResult], None] | None = None,
         postprocess: Callable[[Session, DocumentText], None] | None = None,
+        required_summary: tuple[str, str] | None = None,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
@@ -106,6 +107,7 @@ class ScanExtractor:
         )
         self.progress = progress
         self.postprocess = postprocess
+        self.required_summary = required_summary
 
     def _is_unchanged(self, path: Path) -> bool:
         """ファイルが変化したかをチェックする."""
@@ -125,13 +127,12 @@ class ScanExtractor:
         """一つのバッチの更新判定に必要なメタデータをまとめて読む."""
 
         processed_clause = true()
-        if self.postprocess is not None:
-            from xberg_pipe.provisional_summary import MODEL_NAME, PROMPT_VERSION
-
+        if self.required_summary is not None:
+            model_name, prompt_version = self.required_summary
             processed_clause = exists().where(
                 DocumentSummary.document_text_id == DocumentText.id,
-                DocumentSummary.model_name == MODEL_NAME,
-                DocumentSummary.prompt_version == PROMPT_VERSION,
+                DocumentSummary.model_name == model_name,
+                DocumentSummary.prompt_version == prompt_version,
             )
         resolved = {str(path.resolve()): path for path in paths}
         rows = self.session.execute(

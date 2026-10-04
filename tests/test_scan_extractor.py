@@ -77,6 +77,32 @@ def test_save_only_persists_extracted_text(tmp_path: Path) -> None:
         assert session.scalar(select(func.count()).select_from(DocumentChunk)) == 1
 
 
+def test_custom_postprocess_does_not_require_a_summary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "document.txt"
+    source.write_text("本文", encoding="utf-8")
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    calls = 0
+
+    async def fake_extract_batch(_inputs, _config):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(results=[SimpleNamespace(content="本文")], errors=[])
+
+    monkeypatch.setattr("xberg_pipe.scan_extractor.extract_batch", fake_extract_batch)
+    with Session(engine) as session:
+        extractor = ScanExtractor(
+            session,
+            tmp_path,
+            postprocess=lambda current, text: replace_document_chunks(current, text),
+        )
+        assert asyncio.run(extractor.scan()).extracted == 1
+        assert asyncio.run(extractor.scan()).skipped == 1
+        assert calls == 1
+
+
 def test_changed_extracted_text_invalidates_chunks(tmp_path: Path) -> None:
     source = tmp_path / "document.txt"
     source.write_text("同じファイル内容", encoding="utf-8")

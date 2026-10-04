@@ -111,6 +111,30 @@ def test_keyword_search_prefers_refined_keywords(tmp_path: Path) -> None:
     assert response.json()["results"][0]["keywords"] == ["精密AI"]
 
 
+def test_keyword_search_finds_body_without_keywords(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    engine = create_engine(f"sqlite:///{database.as_posix()}")
+    with Session(engine) as session:
+        session.query(DocumentKeyword).delete()
+        session.commit()
+
+    response = TestClient(create_app(database, encoder=FakeEncoder())).get(
+        "/api/search/keyword", params={"q": "原文"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["keywords"] == []
+
+
+def test_keyword_search_treats_wildcards_literally(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    client = TestClient(create_app(database, encoder=FakeEncoder()))
+
+    assert client.get("/api/search/keyword", params={"q": "%"}).json()["results"] == []
+    assert client.get("/api/search/keyword", params={"q": "_"}).json()["results"] == []
+    assert client.get("/api/search/keyword", params={"q": "   "}).status_code == 422
+
+
 def test_search_page_is_available(tmp_path: Path) -> None:
     response = TestClient(create_app(_database(tmp_path), encoder=FakeEncoder())).get(
         "/"

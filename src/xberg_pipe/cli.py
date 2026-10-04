@@ -121,14 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_scan(args: argparse.Namespace, session: Session) -> int:
+    from xberg_pipe import provisional_summary
     from xberg_pipe.keywording import (
         YakeKeywordExtractor,
         aggregate_chunk_keywords,
         replace_document_keywords,
-    )
-    from xberg_pipe.provisional_summary import (
-        replace_provisional_summary,
-        summarize_extractively,
     )
 
     root = args.root.resolve()
@@ -172,10 +169,12 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
                 DocumentKeyword.model_name == "ja-morph-v1",
             )
         )
-        replace_provisional_summary(
+        provisional_summary.replace_provisional_summary(
             session,
             document_text,
-            summarize_extractively(document_text.extracted_text, keywords),
+            provisional_summary.summarize_extractively(
+                document_text.extracted_text, keywords
+            ),
         )
 
     print("走査を開始します。", flush=True)
@@ -186,6 +185,10 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
             extraction_config=extraction_config,
             batch_size=args.batch_size,
             postprocess=postprocess,
+            required_summary=(
+                provisional_summary.MODEL_NAME,
+                provisional_summary.PROMPT_VERSION,
+            ),
             progress=lambda current: print(
                 f"走査中: 検出={current.discovered} 抽出={current.extracted} "
                 f"スキップ={current.skipped} 失敗={current.failed}",
