@@ -119,15 +119,46 @@ class ScanExtractor:
             and document_path.file_size == stat.st_size
         )
 
+    def _unchanged_paths(self, paths: list[Path]) -> set[str]:
+        """一つのバッチの更新判定に必要なメタデータをまとめて読む."""
+        resolved = {str(path.resolve()): path for path in paths}
+        rows = self.session.execute(
+            select(
+                DocumentPath.path,
+                DocumentPath.modified_at,
+                DocumentPath.file_size,
+                Document.status,
+                DocumentText.id,
+            )
+            .join(DocumentPath.document)
+            .outerjoin(
+                DocumentText,
+                (DocumentText.document_id == Document.id)
+                & (DocumentText.extractor == EXTRACTOR_NAME),
+            )
+            .where(DocumentPath.path.in_(resolved))
+        )
+        return {
+            stored_path
+            for stored_path, modified_at, file_size, status, text_id in rows
+            if status == STATUS_EXTRACTED
+            and text_id is not None
+            and (stat := resolved[stored_path].stat()).st_size == file_size
+            and dt.datetime.fromtimestamp(stat.st_mtime, dt.UTC).replace(tzinfo=None)
+            == modified_at
+        }
+
     async def scan(self) -> ScanResult:
         """対象ファイルを再帰探索し、変更分の抽出結果をSQLiteへ保存する."""
 
         result = ScanResult()
         seen_paths: set[str] = set()
         for paths in iter_files(self.root, self.batch_size):
-            seen_paths.update(str(path.resolve()) for path in paths)
+            resolved = {path: str(path.resolve()) for path in paths}
+            seen_paths.update(resolved.values())
             result.discovered += len(paths)
-            changed_paths = [path for path in paths if not self._is_unchanged(path)]
+            unchanged = self._unchanged_paths(paths)
+            changed_paths = [path for path in paths if resolved[path] not in unchanged]
             result.skipped += len(paths) - len(changed_paths)
             if not changed_paths:
                 if self.progress is not None:

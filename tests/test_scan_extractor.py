@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session
 
 from xberg_pipe.chunking import replace_document_chunks
@@ -113,6 +113,37 @@ def test_failure_does_not_hide_existing_text_for_same_content(tmp_path: Path) ->
         assert document is not None
         assert document.status == "extracted"
         assert extractor._is_unchanged(source) is True
+
+
+def test_unchanged_paths_reads_batch_in_one_query(tmp_path: Path) -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    paths = [tmp_path / f"document-{index}.txt" for index in range(3)]
+    for path in paths:
+        path.write_text("保存済み", encoding="utf-8")
+
+    with Session(engine) as session:
+        extractor = ScanExtractor(session, tmp_path)
+        for path in paths:
+            extractor._save(path, "抽出済み")
+        session.commit()
+
+        queries: list[str] = []
+
+        def count_query(_conn, _cursor, statement, _parameters, _context, _many):
+            queries.append(statement)
+
+        event.listen(engine, "before_cursor_execute", count_query)
+        try:
+            unchanged = extractor._unchanged_paths(paths)
+        finally:
+            event.remove(engine, "before_cursor_execute", count_query)
+
+        assert unchanged == {str(path.resolve()) for path in paths}
+        assert len(queries) == 1
+
+        paths[0].write_text("更新後", encoding="utf-8")
+        assert str(paths[0].resolve()) not in extractor._unchanged_paths(paths)
 
 
 def test_changed_file_removes_orphaned_previous_document(tmp_path: Path) -> None:

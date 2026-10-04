@@ -97,9 +97,10 @@ def chunk_text(text: str, config: ChunkingConfig | None = None) -> list[str]:
     units = _semantic_units(cleaned, config.target_chars)
     chunks: list[str] = []
     current: list[str] = []
+    current_size = 0
 
     for unit in units:
-        if current and len("".join(current)) + len(unit) > config.target_chars:
+        if current and current_size + len(unit) > config.target_chars:
             chunks.append("".join(current).strip())
             overlap: list[str] = []
             overlap_size = 0
@@ -110,7 +111,9 @@ def chunk_text(text: str, config: ChunkingConfig | None = None) -> list[str]:
                 overlap.insert(0, previous)
                 overlap_size += len(previous)
             current = overlap
+            current_size = overlap_size
         current.append(unit)
+        current_size += len(unit)
 
     if current:
         final_chunk = "".join(current).strip()
