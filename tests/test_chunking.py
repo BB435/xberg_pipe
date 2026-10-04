@@ -2,6 +2,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from xberg_pipe.chunking import (
+    MAX_DOWNSTREAM_CHUNKS,
+    MAX_PROCESSING_CHARS,
     ChunkingConfig,
     chunk_text,
     clean_extracted_text,
@@ -27,6 +29,22 @@ def test_chunk_text_prefers_japanese_sentence_boundaries_and_overlaps() -> None:
         sentence in chunks[1]
         for sentence in ("第二文も重要です。", "第三文で詳しく説明します。")
     )
+
+
+def test_chunk_text_limits_long_input() -> None:
+    chunks = chunk_text("あ" * MAX_PROCESSING_CHARS + "末尾は対象外です。")
+
+    assert chunks
+    assert "末尾" not in "".join(chunks)
+    assert all(len(chunk) <= 1_200 for chunk in chunks)
+
+
+def test_chunk_text_limits_number_of_chunks() -> None:
+    chunks = chunk_text(
+        "長い文。" * 1_000, ChunkingConfig(target_chars=10, overlap_chars=2)
+    )
+
+    assert len(chunks) == MAX_DOWNSTREAM_CHUNKS
 
 
 def test_replace_document_chunks_replaces_old_rows() -> None:

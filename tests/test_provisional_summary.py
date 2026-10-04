@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from xberg_pipe.models import Base, Document, DocumentSummary, DocumentText
 from xberg_pipe.provisional_summary import (
     LEGACY_MODEL_NAME,
+    MAX_SUMMARY_INPUT_CHARS,
     MODEL_NAME,
     replace_provisional_summary,
     summarize_extractively,
@@ -24,6 +25,17 @@ def test_extractive_summary_uses_original_sentences_in_original_order() -> None:
 
 def test_extractive_summary_keeps_unpunctuated_final_sentence() -> None:
     assert summarize_extractively("結論です。最後の条件", []) == "結論です。最後の条件"
+
+
+def test_extractive_summary_limits_long_input() -> None:
+    summary = summarize_extractively(
+        "前半です。" * (MAX_SUMMARY_INPUT_CHARS // 5 + 1) + "末尾は対象外です。",
+        [],
+    )
+
+    assert summary
+    assert len(summary) <= 400
+    assert "末尾" not in summary
 
 
 def test_provisional_summary_replaces_only_its_own_row(tmp_path: Path) -> None:

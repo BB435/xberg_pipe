@@ -6,7 +6,11 @@ from loguru import logger
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
-from xberg_pipe.chunking import clean_extracted_text
+from xberg_pipe.chunking import (
+    DEFAULT_TARGET_CHARS,
+    MAX_DOWNSTREAM_CHUNKS,
+    chunk_text,
+)
 from xberg_pipe.models import DocumentSummary, DocumentText
 
 PROMPT_VERSION = "ja-v1"
@@ -131,10 +135,12 @@ def summarize_document(
     client: SummaryClient,
     config: SummaryConfig,
 ) -> str:
-    chunks = [chunk.content for chunk in document_text.chunks]
+    chunks = [
+        chunk.content[:DEFAULT_TARGET_CHARS]
+        for chunk in document_text.chunks[:MAX_DOWNSTREAM_CHUNKS]
+    ]
     if not chunks:
-        cleaned = clean_extracted_text(document_text.extracted_text)
-        chunks = [cleaned] if cleaned else []
+        chunks = chunk_text(document_text.extracted_text)[:MAX_DOWNSTREAM_CHUNKS]
     if not chunks:
         return ""
 

@@ -8,7 +8,11 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.selectable import Select
 
-from xberg_pipe.chunking import chunk_text
+from xberg_pipe.chunking import (
+    DEFAULT_TARGET_CHARS,
+    MAX_DOWNSTREAM_CHUNKS,
+    chunk_text,
+)
 from xberg_pipe.models import DocumentKeyword, DocumentText
 
 DEFAULT_MODEL = "sirasagi62/ruri-v3-30m-ONNX"
@@ -70,6 +74,7 @@ class YakeKeywordExtractor:
         self._max_ngram = max_ngram
 
     def extract(self, text: str, top_n: int) -> list[tuple[str, float]]:
+        text = text[:DEFAULT_TARGET_CHARS]
         phrases: list[str] = []
         parts: list[str] = []
         for word in self._tokenizer.tokenize(text, self._split_mode):
@@ -163,6 +168,7 @@ class RuriKeyBertExtractor:
         return [word for word, _ in counts.most_common(self._config.max_candidates)]
 
     def extract(self, text: str, top_n: int) -> list[tuple[str, float]]:
+        text = text[:DEFAULT_TARGET_CHARS]
         candidates = self._candidates(text)
         if not candidates:
             return []
@@ -198,10 +204,13 @@ def extract_document_keywords(
     extractor: KeywordExtractor,
     config: KeywordConfig,
 ) -> list[tuple[str, float]]:
-    texts = (chunk.content for chunk in document_text.chunks)
+    texts = (
+        chunk.content[:DEFAULT_TARGET_CHARS]
+        for chunk in document_text.chunks[:MAX_DOWNSTREAM_CHUNKS]
+    )
     if not document_text.chunks:
         # 未チャンキング文書の全文をKeyBERTへ渡すとメモリ使用量が急増する。
-        texts = iter(chunk_text(document_text.extracted_text))
+        texts = iter(chunk_text(document_text.extracted_text)[:MAX_DOWNSTREAM_CHUNKS])
     per_chunk_top_n = max(config.top_n * 3, config.top_n)
     return aggregate_chunk_keywords(
         (extractor.extract(text, per_chunk_top_n) for text in texts), config.top_n

@@ -8,7 +8,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from tqdm.auto import tqdm
 from xberg import ExtractionConfig, OcrConfig
 
-from xberg_pipe.chunking import ChunkingConfig, chunk_text, replace_document_chunks
+from xberg_pipe.chunking import (
+    CHUNKER_VERSION,
+    MAX_DOWNSTREAM_CHUNKS,
+    ChunkingConfig,
+    chunk_text,
+    replace_document_chunks,
+)
 from xberg_pipe.db import DB_PATH, create_db_engine, init_db
 from xberg_pipe.keywording import (
     DEFAULT_MODEL,
@@ -153,14 +159,14 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
         nonlocal extractor
         if extractor is None:
             extractor = YakeKeywordExtractor(keyword_config.max_ngram)
-        chunks = chunk_text(document_text.extracted_text)
+        chunks = chunk_text(document_text.extracted_text)[:MAX_DOWNSTREAM_CHUNKS]
         session.flush()
-        has_chunks = session.scalar(
-            select(DocumentChunk.id)
+        chunker_version = session.scalar(
+            select(DocumentChunk.chunker_version)
             .where(DocumentChunk.document_text_id == document_text.id)
             .limit(1)
         )
-        if not has_chunks:
+        if chunker_version != CHUNKER_VERSION:
             replace_document_chunks(session, document_text, ChunkingConfig())
         keywords = aggregate_chunk_keywords(
             (extractor.extract(chunk, keyword_config.top_n * 3) for chunk in chunks),

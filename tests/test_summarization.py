@@ -5,7 +5,13 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from xberg_pipe.chunking import replace_document_chunks
-from xberg_pipe.models import Base, Document, DocumentSummary, DocumentText
+from xberg_pipe.models import (
+    Base,
+    Document,
+    DocumentChunk,
+    DocumentSummary,
+    DocumentText,
+)
 from xberg_pipe.summarization import (
     DEFAULT_CONTEXT_WINDOW,
     DEFAULT_OLLAMA_HOST,
@@ -13,6 +19,7 @@ from xberg_pipe.summarization import (
     OllamaSummaryClient,
     SummaryConfig,
     rebuild_all_summaries,
+    summarize_document,
 )
 
 
@@ -104,3 +111,25 @@ def test_rebuild_all_summaries_saves_reduced_summary(tmp_path: Path) -> None:
         assert summary.summary == f"要約{client.calls}"
         assert client.calls >= 3
         assert progress == [(1, 0, 0)]
+
+
+def test_llm_summary_limits_existing_long_chunks() -> None:
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.inputs: list[str] = []
+
+        def complete(self, _system: str, user: str) -> str:
+            self.inputs.append(user)
+            return "要約"
+
+    text = DocumentText(extracted_text="本文")
+    text.chunks = [
+        DocumentChunk(chunk_index=index, content="あ" * 2_000, character_count=2_000)
+        for index in range(60)
+    ]
+    client = RecordingClient()
+
+    assert summarize_document(text, client, SummaryConfig()) == "要約"
+    fragments = [item for item in client.inputs if item.startswith("次の文書断片")]
+    assert len(fragments) == 50
+    assert all(len(item.rsplit("\n\n", 1)[-1]) == 1_200 for item in fragments)

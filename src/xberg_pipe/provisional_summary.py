@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Sequence
+from types import SimpleNamespace
 
 from ja_stopword_filter import JaStopwordFilter
 from sqlalchemy import delete
@@ -15,8 +16,11 @@ from xberg_pipe.chunking import clean_extracted_text
 from xberg_pipe.models import DocumentSummary, DocumentText
 
 MODEL_NAME = "sumy-lexrank-ja-v1"
-PROMPT_VERSION = "sumy-lexrank-v1"
+PROMPT_VERSION = "sumy-lexrank-v2"
 LEGACY_MODEL_NAME = "extractive-ja-v1"
+MAX_SUMMARY_INPUT_CHARS = 10_000
+MAX_SUMMARY_SENTENCES = 128
+MAX_SENTENCE_CHARS = 1_200
 _SENTENCE = re.compile(r"[^。！？!?]+[。！？!?]*")
 
 
@@ -40,9 +44,10 @@ class SudachiTokenizer(Tokenizer):
 
     def to_sentences(self, paragraph: str) -> tuple[str, ...]:
         return tuple(
-            sentence.strip()
+            sentence[offset : offset + MAX_SENTENCE_CHARS]
             for match in _SENTENCE.finditer(paragraph)
             if (sentence := match.group().strip())
+            for offset in range(0, len(sentence), MAX_SENTENCE_CHARS)
         )
 
     def to_words(self, sentence: str) -> tuple[str, ...]:
@@ -59,11 +64,16 @@ def summarize_extractively(
 ) -> str:
     """sumyのLexRankで文を選び、原文順に返す。"""
 
-    cleaned = clean_extracted_text(text)
+    cleaned = clean_extracted_text(text[:MAX_SUMMARY_INPUT_CHARS])[
+        :MAX_SUMMARY_INPUT_CHARS
+    ]
     if not cleaned or max_chars <= 0:
         return ""
     parser = PlaintextParser.from_string(cleaned, SudachiTokenizer())
-    sentences = [str(sentence).strip() for sentence in parser.document.sentences]
+    sentences = [
+        str(sentence).strip()
+        for sentence in parser.document.sentences[:MAX_SUMMARY_SENTENCES]
+    ]
     sentences = [sentence for sentence in sentences if sentence]
     if not sentences:
         return ""
@@ -71,13 +81,16 @@ def summarize_extractively(
         return "".join(sentences)
 
     summarizer = RankedLexRankSummarizer()
-    ranked_sentences = list(summarizer(parser.document, len(sentences)))
+    selected_sentences = parser.document.sentences[:MAX_SUMMARY_SENTENCES]
+    ranked_sentences = list(
+        summarizer(SimpleNamespace(sentences=selected_sentences), len(sentences))
+    )
     ranks = {id(sentence): rank for rank, sentence in enumerate(ranked_sentences)}
     ranked = sorted(
         range(len(sentences)),
         key=lambda index: (
             -sum(score for word, score in keywords if word in sentences[index]),
-            ranks[id(parser.document.sentences[index])],
+            ranks[id(selected_sentences[index])],
         ),
     )
     chosen: list[int] = []

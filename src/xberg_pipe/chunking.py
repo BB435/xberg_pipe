@@ -9,9 +9,11 @@ from sqlalchemy.orm import Session
 from xberg_pipe.models import DocumentChunk, DocumentText
 from xberg_pipe.repository import delete_document_derivatives
 
-CHUNKER_VERSION = "ja-v1"
+CHUNKER_VERSION = "ja-v2"
 DEFAULT_TARGET_CHARS = 1_200
 DEFAULT_OVERLAP_CHARS = 200
+MAX_PROCESSING_CHARS = 50_000
+MAX_DOWNSTREAM_CHUNKS = 50
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _TRAILING_SPACE = re.compile(r"[ \t]+(?=\n|$)")
@@ -90,7 +92,7 @@ def chunk_text(text: str, config: ChunkingConfig | None = None) -> list[str]:
     """日本語の文・段落境界を優先し、重複を持つチャンクへ分割する."""
 
     config = config or ChunkingConfig()
-    cleaned = clean_extracted_text(text)
+    cleaned = clean_extracted_text(text[:MAX_PROCESSING_CHARS])[:MAX_PROCESSING_CHARS]
     if not cleaned:
         return []
 
@@ -102,6 +104,8 @@ def chunk_text(text: str, config: ChunkingConfig | None = None) -> list[str]:
     for unit in units:
         if current and current_size + len(unit) > config.target_chars:
             chunks.append("".join(current).strip())
+            if len(chunks) >= MAX_DOWNSTREAM_CHUNKS:
+                return chunks
             overlap: list[str] = []
             overlap_size = 0
             overlap_budget = min(config.overlap_chars, config.target_chars - len(unit))
@@ -117,7 +121,9 @@ def chunk_text(text: str, config: ChunkingConfig | None = None) -> list[str]:
 
     if current:
         final_chunk = "".join(current).strip()
-        if not chunks or final_chunk != chunks[-1]:
+        if (not chunks or final_chunk != chunks[-1]) and len(
+            chunks
+        ) < MAX_DOWNSTREAM_CHUNKS:
             chunks.append(final_chunk)
     return chunks
 
@@ -131,7 +137,7 @@ def replace_document_chunks(
 
     session.flush()
     delete_document_derivatives(session, document_text)
-    chunks = chunk_text(document_text.extracted_text, config)
+    chunks = chunk_text(document_text.extracted_text, config)[:MAX_DOWNSTREAM_CHUNKS]
     session.add_all(
         DocumentChunk(
             document_text=document_text,

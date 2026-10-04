@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from xberg_pipe.chunking import CHUNKER_VERSION
 from xberg_pipe.cli import build_parser, main
 from xberg_pipe.keywording import LIGHT_MODEL
 from xberg_pipe.models import DocumentChunk, DocumentKeyword, DocumentSummary
@@ -62,6 +63,7 @@ def test_scan_saves_light_keywords_without_keybert(tmp_path: Path, monkeypatch) 
         assert session.scalar(select(DocumentSummary)) is not None
         keyword.model_name = "ja-morph-v1"
         session.scalar(select(DocumentSummary)).prompt_version = "extractive-v2"
+        session.scalar(select(DocumentChunk)).chunker_version = "ja-v1"
         session.commit()
 
     assert main(["--database", str(database), "scan", str(tmp_path)]) == 0
@@ -69,6 +71,7 @@ def test_scan_saves_light_keywords_without_keybert(tmp_path: Path, monkeypatch) 
         assert {
             item.model_name for item in session.scalars(select(DocumentKeyword))
         } == {LIGHT_MODEL}
+        assert session.scalar(select(DocumentChunk)).chunker_version == CHUNKER_VERSION
 
 
 def test_scan_progress_has_no_total(tmp_path: Path, monkeypatch) -> None:

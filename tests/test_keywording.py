@@ -51,6 +51,20 @@ def test_unchunked_document_is_processed_in_bounded_pieces() -> None:
     assert max(extractor.lengths) <= 1200
 
 
+def test_direct_yake_extraction_limits_long_input() -> None:
+    extractor = YakeKeywordExtractor()
+    seen = []
+
+    class RecordingTokenizer:
+        def tokenize(self, text, _mode):
+            seen.append(len(text))
+            return []
+
+    extractor._tokenizer = RecordingTokenizer()
+    assert extractor.extract("あ" * 20_000, top_n=5) == []
+    assert seen == [1_200]
+
+
 def test_keybert_accepts_fastembed_vectors_from_example_file(monkeypatch) -> None:
     class FakeModel:
         def embed(self, texts):
