@@ -64,6 +64,7 @@ class RuriKeyBertExtractor:
 
     def __init__(self, config: KeywordConfig) -> None:
         try:
+            import numpy as np
             from fugashi import Tagger
             from keybert import KeyBERT
             from keybert.backend import BaseEmbedder
@@ -81,7 +82,7 @@ class RuriKeyBertExtractor:
 
             def embed(self, documents, verbose: bool = False):
                 topical_documents = [TOPIC_PREFIX + document for document in documents]
-                return list(self.model.embed(topical_documents))
+                return np.stack(list(self.model.embed(topical_documents)))
 
         model = create_ruri_model(config.model_name, config.device)
         self._keybert = KeyBERT(model=RuriTopicEmbedder(model))

@@ -21,7 +21,7 @@ def create_ruri_model(model_name: str = DEFAULT_MODEL, device: str | None = None
             normalization=True,
             sources=ModelSource(hf=DEFAULT_MODEL),
             dim=256,
-            model_file="onnx/model.onnx",
+            model_file="onnx/model_int8.onnx",
         )
 
     if device is None or device == "cpu":

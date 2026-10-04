@@ -1,11 +1,13 @@
 from pathlib import Path
 
+import numpy as np
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from xberg_pipe.chunking import replace_document_chunks
 from xberg_pipe.keywording import (
     KeywordConfig,
+    RuriKeyBertExtractor,
     aggregate_chunk_keywords,
     rebuild_all_keywords,
 )
@@ -17,6 +19,31 @@ class FakeExtractor:
         if "人工知能" in text:
             return [("人工知能", 0.9), ("機械学習", 0.7)][:top_n]
         return [("自然言語処理", 0.8), ("機械学習", 0.6)][:top_n]
+
+
+def test_keybert_accepts_fastembed_vectors_from_example_file(monkeypatch) -> None:
+    class FakeModel:
+        def embed(self, texts):
+            for text in texts:
+                vector = np.zeros(256, dtype=np.float32)
+                vector[0] = len(text)
+                vector[1] = 1
+                yield vector
+
+    monkeypatch.setattr(
+        "xberg_pipe.fastembed_model.create_ruri_model",
+        lambda model_name, device: FakeModel(),
+    )
+    example = Path(__file__).resolve().parents[1] / "example-docs" / "fake-text.txt"
+    keywords = RuriKeyBertExtractor(KeywordConfig()).extract(
+        example.read_text(encoding="utf-8"), top_n=5
+    )
+
+    assert keywords
+    assert all(
+        isinstance(keyword, str) and isinstance(score, float)
+        for keyword, score in keywords
+    )
 
 
 def test_aggregate_chunk_keywords_rewards_document_wide_terms() -> None:
