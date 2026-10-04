@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -35,11 +36,16 @@ def test_keybert_accepts_fastembed_vectors_from_example_file(monkeypatch) -> Non
         lambda model_name, device: FakeModel(),
     )
     example = Path(__file__).resolve().parents[1] / "example-docs" / "fake-text.txt"
-    keywords = RuriKeyBertExtractor(KeywordConfig()).extract(
-        example.read_text(encoding="utf-8"), top_n=5
-    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        keywords = RuriKeyBertExtractor(KeywordConfig()).extract(
+            example.read_text(encoding="utf-8"), top_n=5
+        )
 
     assert keywords
+    assert not any(
+        "Upper case characters found in vocabulary" in str(w.message) for w in caught
+    )
     assert all(
         isinstance(keyword, str) and isinstance(score, float)
         for keyword, score in keywords

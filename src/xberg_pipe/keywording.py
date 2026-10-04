@@ -68,6 +68,7 @@ class RuriKeyBertExtractor:
             from fugashi import Tagger
             from keybert import KeyBERT
             from keybert.backend import BaseEmbedder
+            from sklearn.feature_extraction.text import CountVectorizer
 
             from xberg_pipe.fastembed_model import create_ruri_model
         except ImportError as error:
@@ -87,6 +88,7 @@ class RuriKeyBertExtractor:
         model = create_ruri_model(config.model_name, config.device)
         self._keybert = KeyBERT(model=RuriTopicEmbedder(model))
         self._tagger = Tagger()
+        self._vectorizer_type = CountVectorizer
         self._config = config
 
     def _candidates(self, text: str) -> list[str]:
@@ -116,7 +118,7 @@ class RuriKeyBertExtractor:
             return []
         return self._keybert.extract_keywords(
             text,
-            candidates=candidates,
+            vectorizer=self._vectorizer_type(vocabulary=candidates, lowercase=False),
             top_n=min(top_n, len(candidates)),
             use_mmr=True,
             diversity=self._config.diversity,
