@@ -1,10 +1,12 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session
 
 from xberg_pipe.chunking import replace_document_chunks
+from xberg_pipe.keywording import replace_document_keywords
 from xberg_pipe.models import (
     Base,
     ChunkEmbedding,
@@ -14,7 +16,43 @@ from xberg_pipe.models import (
     DocumentSummary,
     DocumentText,
 )
+from xberg_pipe.provisional_summary import (
+    replace_provisional_summary,
+    summarize_extractively,
+)
 from xberg_pipe.scan_extractor import ScanExtractor
+
+
+def test_scan_saves_postprocessing_with_extraction(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "document.txt"
+    source.write_text("重要な結論です。", encoding="utf-8")
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    async def fake_extract_batch(_inputs, _config):
+        return SimpleNamespace(
+            results=[SimpleNamespace(content="重要な結論です。")], errors=[]
+        )
+
+    monkeypatch.setattr("xberg_pipe.scan_extractor.extract_batch", fake_extract_batch)
+
+    def postprocess(session, document_text):
+        replace_document_chunks(session, document_text)
+        keywords = [("結論", 0.9)]
+        replace_document_keywords(session, document_text, keywords, "test")
+        replace_provisional_summary(
+            session,
+            document_text,
+            summarize_extractively(document_text.extracted_text, keywords),
+        )
+
+    with Session(engine) as session:
+        extractor = ScanExtractor(session, tmp_path, postprocess=postprocess)
+        assert asyncio.run(extractor.scan()).extracted == 1
+        assert session.scalar(select(func.count()).select_from(DocumentChunk)) == 1
+        assert session.scalar(select(DocumentKeyword)).keyword == "結論"
+        assert session.scalar(select(DocumentSummary)).summary == "重要な結論です。"
+        assert asyncio.run(extractor.scan()).skipped == 1
 
 
 def test_save_only_persists_extracted_text(tmp_path: Path) -> None:

@@ -4,10 +4,23 @@
 
 ## 埋め込みモデル
 
-キーワード抽出とベクトル検索はFastEmbedで
+キーフレーズ抽出とベクトル検索はFastEmbedで
 `sirasagi62/ruri-v3-30m-ONNX`を使用します。初回実行時にモデルを取得します。
 旧モデルで生成したベクトルは新しい検索用テーブルでは使用されません。
 既存のデータベースでは`uv run xberg-pipe embed`を実行してベクトルを再生成してください。
+
+## 文書の取り込み
+
+`scan`で変更されたファイルのテキスト抽出、チャンク生成、KeyBERTによる
+キーフレーズ抽出、暫定要約の保存を一度に行います。暫定要約は原文中の文を
+重要度に応じて選ぶため、LLMや追加のモデルを使いません。
+
+```console
+uv sync --extra keywords --group dev
+uv run xberg-pipe scan <directory>
+```
+
+既存のデータベースでも、暫定要約がまだない文書は次の`scan`で処理されます。
 
 ## 検索サーバー
 
@@ -22,7 +35,7 @@ uv run xberg-pipe --database data/app.db serve
 ## Ollamaによる要約
 
 小型モデル向けの既定値は `qwen3.5:4b` です。Ollamaを起動してモデルを取得後、
-保存済み文書を要約できます。
+保存済み文書の暫定要約とは別に、LLM要約を生成できます。
 
 ```console
 uv sync --extra llm --group dev

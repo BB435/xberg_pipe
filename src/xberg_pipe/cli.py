@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 from xberg import ExtractionConfig, OcrConfig
 
-from xberg_pipe.chunking import ChunkingConfig, rebuild_all_chunks
+from xberg_pipe.chunking import ChunkingConfig, chunk_text, replace_document_chunks
 from xberg_pipe.db import DB_PATH, create_db_engine, init_db
 from xberg_pipe.keywording import DEFAULT_MODEL, RURI_MODELS, KeywordConfig
 from xberg_pipe.models import (
@@ -30,7 +30,7 @@ from xberg_pipe.summarization import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="xberg-pipe",
-        description="文書の抽出、チャンキング、SQLite保存を実行します。",
+        description="文書の抽出、チャンク・キーフレーズ・暫定要約の保存を実行します。",
     )
     parser.add_argument(
         "--database",
@@ -43,12 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("init-db", help="SQLiteテーブルを作成します。")
 
     scan = subparsers.add_parser(
-        "scan", help="ディレクトリを再帰走査し、抽出テキストのみ保存します。"
+        "scan", help="抽出からキーフレーズ・暫定要約まで実行します。"
     )
     scan.add_argument("root", type=Path, help="走査するディレクトリ")
     scan.add_argument(
         "--batch-size", type=int, default=BATCH_SIZE, help="一度に抽出するファイル数"
     )
+    scan.add_argument("--keyword-model", choices=RURI_MODELS, default=DEFAULT_MODEL)
+    scan.add_argument("--device", help="キーフレーズ抽出の実行デバイス")
     scan.add_argument(
         "--ocr-backend", default="paddleocr", help="xberg OCRバックエンド"
     )
@@ -64,26 +66,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--force-ocr", action="store_true", help="ネイティブテキストがあってもOCRする"
     )
     ocr_mode.add_argument("--disable-ocr", action="store_true", help="OCRを無効化する")
-
-    chunk = subparsers.add_parser(
-        "chunk", help="保存済みテキストのチャンクを再生成します。"
-    )
-    chunk.add_argument("--target-chars", type=int, default=1_200)
-    chunk.add_argument("--overlap-chars", type=int, default=200)
-    chunk.add_argument("--batch-size", type=int, default=100)
-
-    keywords = subparsers.add_parser(
-        "keywords", help="KeyBERTでファイルごとのキーワードを抽出します。"
-    )
-    keywords.add_argument(
-        "--model", choices=RURI_MODELS, default=DEFAULT_MODEL, help="Ruri埋め込みモデル"
-    )
-    keywords.add_argument("--top-n", type=int, default=10)
-    keywords.add_argument("--max-ngram", type=int, default=3)
-    keywords.add_argument("--max-candidates", type=int, default=500)
-    keywords.add_argument("--diversity", type=float, default=0.35)
-    keywords.add_argument("--device", help="例: cpu, cuda, cuda:0")
-    keywords.add_argument("--batch-size", type=int, default=20)
 
     summarize = subparsers.add_parser(
         "summarize", help="Ollamaでファイルごとの要約を生成します。"
@@ -129,6 +111,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_scan(args: argparse.Namespace, session: Session) -> int:
+    from xberg_pipe.keywording import (
+        RuriKeyBertExtractor,
+        aggregate_chunk_keywords,
+        replace_document_keywords,
+    )
+    from xberg_pipe.provisional_summary import (
+        replace_provisional_summary,
+        summarize_extractively,
+    )
+
     root = args.root.resolve()
     if not root.is_dir():
         raise ValueError(f"走査対象ディレクトリが見つかりません: {root}")
@@ -141,6 +133,35 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
         ),
         force_ocr=args.force_ocr,
     )
+    keyword_config = KeywordConfig(model_name=args.keyword_model, device=args.device)
+    extractor = None
+
+    def postprocess(session: Session, document_text: DocumentText) -> None:
+        nonlocal extractor
+        if extractor is None:
+            extractor = RuriKeyBertExtractor(keyword_config)
+        chunks = chunk_text(document_text.extracted_text)
+        session.flush()
+        has_chunks = session.scalar(
+            select(DocumentChunk.id)
+            .where(DocumentChunk.document_text_id == document_text.id)
+            .limit(1)
+        )
+        if not has_chunks:
+            replace_document_chunks(session, document_text, ChunkingConfig())
+        keywords = aggregate_chunk_keywords(
+            (extractor.extract(chunk, keyword_config.top_n * 3) for chunk in chunks),
+            keyword_config.top_n,
+        )
+        replace_document_keywords(
+            session, document_text, keywords, keyword_config.model_name
+        )
+        replace_provisional_summary(
+            session,
+            document_text,
+            summarize_extractively(document_text.extracted_text, keywords),
+        )
+
     print("走査を開始します。", flush=True)
     result = asyncio.run(
         ScanExtractor(
@@ -148,6 +169,7 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
             root,
             extraction_config=extraction_config,
             batch_size=args.batch_size,
+            postprocess=postprocess,
             progress=lambda current: print(
                 f"走査中: 検出={current.discovered} 抽出={current.extracted} "
                 f"スキップ={current.skipped} 失敗={current.failed}",
@@ -160,26 +182,6 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
         f"スキップ={result.skipped} 失敗={result.failed}"
     )
     return 1 if result.failed else 0
-
-
-def _run_chunk(args: argparse.Namespace, session: Session) -> int:
-    config = ChunkingConfig(
-        target_chars=args.target_chars,
-        overlap_chars=args.overlap_chars,
-    )
-    print("チャンク生成を開始します。", flush=True)
-    result = rebuild_all_chunks(
-        session,
-        config,
-        batch_size=args.batch_size,
-        progress=lambda current: print(
-            f"チャンク生成中: 処理文書={current.documents} "
-            f"生成チャンク={current.chunks}",
-            flush=True,
-        ),
-    )
-    print(f"処理文書={result.documents} 生成チャンク={result.chunks}")
-    return 0
 
 
 def _run_stats(session: Session) -> int:
@@ -195,36 +197,6 @@ def _run_stats(session: Session) -> int:
     for label, model in tables:
         count = session.scalar(select(func.count()).select_from(model))
         print(f"{label}={count}")
-    return 0
-
-
-def _run_keywords(args: argparse.Namespace, session: Session) -> int:
-    # 重いML依存とモデルのロードは、このコマンドを選択したときだけ行う。
-    from xberg_pipe.keywording import rebuild_all_keywords
-
-    config = KeywordConfig(
-        model_name=args.model,
-        top_n=args.top_n,
-        max_ngram=args.max_ngram,
-        max_candidates=args.max_candidates,
-        diversity=args.diversity,
-        device=args.device,
-    )
-    print("キーワード抽出を開始します。", flush=True)
-    result = rebuild_all_keywords(
-        session,
-        config=config,
-        batch_size=args.batch_size,
-        progress=lambda current: print(
-            f"キーワード抽出中: 処理文書={current.documents} "
-            f"保存キーワード={current.keywords} スキップ={current.skipped}",
-            flush=True,
-        ),
-    )
-    print(
-        f"処理文書={result.documents} 保存キーワード={result.keywords} "
-        f"スキップ={result.skipped}"
-    )
     return 0
 
 
@@ -328,10 +300,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         with session_factory() as session:
             if args.command == "scan":
                 return _run_scan(args, session)
-            if args.command == "chunk":
-                return _run_chunk(args, session)
-            if args.command == "keywords":
-                return _run_keywords(args, session)
             if args.command == "summarize":
                 return _run_summarize(args, session)
             if args.command == "embed":

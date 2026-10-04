@@ -27,11 +27,8 @@ def test_init_db_and_stats(tmp_path: Path, capsys) -> None:
     assert "keywords=0" in output
 
 
-def test_chunk_empty_database(tmp_path: Path, capsys) -> None:
-    database = tmp_path / "test.db"
+def test_scan_includes_postprocessing_options() -> None:
+    args = build_parser().parse_args(["scan", "docs"])
 
-    assert main(["--database", str(database), "chunk"]) == 0
-
-    output = capsys.readouterr().out
-    assert "チャンク生成を開始します。" in output
-    assert "処理文書=0 生成チャンク=0" in output
+    assert args.keyword_model
+    assert args.device is None

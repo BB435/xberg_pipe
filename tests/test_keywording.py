@@ -10,6 +10,7 @@ from xberg_pipe.keywording import (
     KeywordConfig,
     RuriKeyBertExtractor,
     aggregate_chunk_keywords,
+    extract_document_keywords,
     rebuild_all_keywords,
 )
 from xberg_pipe.models import Base, Document, DocumentKeyword, DocumentText
@@ -20,6 +21,24 @@ class FakeExtractor:
         if "人工知能" in text:
             return [("人工知能", 0.9), ("機械学習", 0.7)][:top_n]
         return [("自然言語処理", 0.8), ("機械学習", 0.6)][:top_n]
+
+
+def test_unchunked_document_is_processed_in_bounded_pieces() -> None:
+    class RecordingExtractor:
+        def __init__(self) -> None:
+            self.lengths: list[int] = []
+
+        def extract(self, text: str, top_n: int) -> list[tuple[str, float]]:
+            self.lengths.append(len(text))
+            return [("人工知能", 0.8)]
+
+    document_text = DocumentText(extracted_text="人工知能について説明します。" * 1000)
+    extractor = RecordingExtractor()
+    keywords = extract_document_keywords(document_text, extractor, KeywordConfig())
+
+    assert keywords == [("人工知能", 0.84)]
+    assert len(extractor.lengths) > 1
+    assert max(extractor.lengths) <= 1200
 
 
 def test_keybert_accepts_fastembed_vectors_from_example_file(monkeypatch) -> None:

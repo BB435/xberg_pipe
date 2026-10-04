@@ -5,8 +5,9 @@ from typing import Protocol
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.sql.selectable import Select
 
-from xberg_pipe.chunking import clean_extracted_text
+from xberg_pipe.chunking import chunk_text
 from xberg_pipe.models import DocumentKeyword, DocumentText
 
 DEFAULT_MODEL = "sirasagi62/ruri-v3-30m-ONNX"
@@ -137,7 +138,7 @@ def aggregate_chunk_keywords(
 
     # 最大類似度を主とし、複数チャンクに現れる語をわずかに優遇する。
     aggregated = [
-        (keyword, min(1.0, max(values) + min(len(values) - 1, 4) * 0.01))
+        (keyword, min(1.0, round(max(values) + min(len(values) - 1, 4) * 0.01, 6)))
         for keyword, values in scores.items()
     ]
     return sorted(aggregated, key=lambda item: (-item[1], item[0]))[:top_n]
@@ -148,10 +149,10 @@ def extract_document_keywords(
     extractor: KeywordExtractor,
     config: KeywordConfig,
 ) -> list[tuple[str, float]]:
-    texts = [chunk.content for chunk in document_text.chunks]
-    if not texts:
-        cleaned = clean_extracted_text(document_text.extracted_text)
-        texts = [cleaned] if cleaned else []
+    texts = (chunk.content for chunk in document_text.chunks)
+    if not document_text.chunks:
+        # 未チャンキング文書の全文をKeyBERTへ渡すとメモリ使用量が急増する。
+        texts = iter(chunk_text(document_text.extracted_text))
     per_chunk_top_n = max(config.top_n * 3, config.top_n)
     return aggregate_chunk_keywords(
         (extractor.extract(text, per_chunk_top_n) for text in texts), config.top_n
@@ -188,17 +189,17 @@ def rebuild_all_keywords(
     session: Session,
     config: KeywordConfig | None = None,
     batch_size: int = 20,
-    extractor: KeywordExtractor | None = None,
+    extractor: RuriKeyBertExtractor | None = None,
     progress: Callable[[KeywordResult], None] | None = None,
 ) -> KeywordResult:
     """保存済み文書をKeyBERTで処理し、ファイル単位のキーワードを保存する."""
 
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
-    config = config or KeywordConfig()
-    extractor = extractor or RuriKeyBertExtractor(config)
+    config: KeywordConfig = config or KeywordConfig()
+    extractor: RuriKeyBertExtractor = extractor or RuriKeyBertExtractor(config)
     result = KeywordResult()
-    statement = (
+    statement: Select[DocumentText] = (
         select(DocumentText)
         .options(selectinload(DocumentText.chunks))
         .order_by(DocumentText.id)
@@ -210,7 +211,9 @@ def rebuild_all_keywords(
             if progress is not None:
                 progress(result)
             continue
-        keywords = extract_document_keywords(document_text, extractor, config)
+        keywords: list[tuple[str, float]] = extract_document_keywords(
+            document_text, extractor, config
+        )
         result.keywords += replace_document_keywords(
             session, document_text, keywords, config.model_name
         )
