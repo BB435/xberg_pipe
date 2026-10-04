@@ -13,6 +13,7 @@ from xberg_pipe.models import DocumentKeyword, DocumentText
 DEFAULT_MODEL = "sirasagi62/ruri-v3-30m-ONNX"
 RURI_MODELS = (DEFAULT_MODEL,)
 TOPIC_PREFIX = "トピック: "
+LIGHT_MODEL = "ja-morph-v1"
 
 _TARGET_POS = {"名詞", "形容詞"}
 _STOP_WORDS = {
@@ -58,6 +59,48 @@ class KeywordResult:
 
 class KeywordExtractor(Protocol):
     def extract(self, text: str, top_n: int) -> list[tuple[str, float]]: ...
+
+
+class MorphKeywordExtractor:
+    """形態素の品詞・頻度・初出位置からキーフレーズを選ぶ。"""
+
+    def __init__(self, max_ngram: int = 3) -> None:
+        from fugashi import Tagger
+
+        self._tagger = Tagger()
+        self.max_ngram = max_ngram
+
+    def extract(self, text: str, top_n: int) -> list[tuple[str, float]]:
+        tokens = [
+            (word.surface.strip(), getattr(word.feature, "pos1", ""))
+            for word in self._tagger(text)
+        ]
+        counts: Counter[str] = Counter()
+        first_positions: dict[str, int] = {}
+        for start in range(len(tokens)):
+            parts: list[str] = []
+            for surface, pos in tokens[start : start + self.max_ngram]:
+                if pos not in _TARGET_POS or not surface:
+                    break
+                parts.append(surface)
+                candidate = "".join(parts)
+                if (
+                    len(candidate) >= 2
+                    and candidate not in _STOP_WORDS
+                    and not candidate.isnumeric()
+                ):
+                    counts[candidate] += 1
+                    first_positions.setdefault(candidate, start)
+        ranked = sorted(
+            counts,
+            key=lambda word: (
+                -(counts[word] * (1 + min(len(word), 12) / 12)),
+                first_positions[word],
+                word,
+            ),
+        )[:top_n]
+        highest = max((counts[word] for word in ranked), default=1)
+        return [(word, round(counts[word] / highest, 6)) for word in ranked]
 
 
 class RuriKeyBertExtractor:

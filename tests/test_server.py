@@ -10,6 +10,7 @@ pytest.importorskip("sqlite_vec")
 from fastapi.testclient import TestClient
 
 from xberg_pipe.chunking import replace_document_chunks
+from xberg_pipe.keywording import DEFAULT_MODEL, LIGHT_MODEL
 from xberg_pipe.models import (
     Base,
     Document,
@@ -58,7 +59,7 @@ def _database(tmp_path: Path) -> Path:
         session.add(text)
         replace_document_chunks(session, text)
         text.keywords.append(
-            DocumentKeyword(model_name="test", rank=1, keyword="AI", score=0.9)
+            DocumentKeyword(model_name=LIGHT_MODEL, rank=1, keyword="AI", score=0.9)
         )
         session.commit()
     rebuild_embeddings(database, EmbeddingConfig(), FakeEncoder())
@@ -89,6 +90,25 @@ def test_keyword_search_returns_keyword_and_preview(tmp_path: Path) -> None:
     result = response.json()["results"][0]
     assert result["keywords"] == ["AI"]
     assert result["preview"] == "人工知能の 原文です。 続き"
+
+
+def test_keyword_search_prefers_refined_keywords(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    engine = create_engine(f"sqlite:///{database.as_posix()}")
+    with Session(engine) as session:
+        text = session.query(DocumentText).one()
+        text.keywords.append(
+            DocumentKeyword(
+                model_name=DEFAULT_MODEL, rank=1, keyword="精密AI", score=0.8
+            )
+        )
+        session.commit()
+    client = TestClient(create_app(database, encoder=FakeEncoder()))
+
+    response = client.get("/api/search/keyword", params={"q": "AI"})
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["keywords"] == ["精密AI"]
 
 
 def test_search_page_is_available(tmp_path: Path) -> None:

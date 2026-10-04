@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from xberg_pipe.chunking import replace_document_chunks
 from xberg_pipe.keywording import (
     KeywordConfig,
+    MorphKeywordExtractor,
     RuriKeyBertExtractor,
     aggregate_chunk_keywords,
     extract_document_keywords,
@@ -21,6 +22,15 @@ class FakeExtractor:
         if "人工知能" in text:
             return [("人工知能", 0.9), ("機械学習", 0.7)][:top_n]
         return [("自然言語処理", 0.8), ("機械学習", 0.6)][:top_n]
+
+
+def test_morph_keywords_extracts_japanese_phrases_without_keybert() -> None:
+    keywords = MorphKeywordExtractor().extract(
+        "人工知能の研究を進めます。人工知能の活用を検討します。", top_n=5
+    )
+
+    assert any(word == "人工知能" for word, _ in keywords)
+    assert all(0 < score <= 1 for _, score in keywords)
 
 
 def test_unchunked_document_is_processed_in_bounded_pieces() -> None:

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import aliased, sessionmaker
 
 from xberg_pipe.db import create_db_engine, init_db
-from xberg_pipe.keywording import DEFAULT_MODEL
+from xberg_pipe.keywording import DEFAULT_MODEL, LIGHT_MODEL
 from xberg_pipe.models import DocumentKeyword, DocumentPath, DocumentText
 from xberg_pipe.vector_store import EmbeddingConfig, Encoder, search_embeddings
 
@@ -110,6 +110,15 @@ def create_app(
     ) -> dict[str, object]:
         pattern = f"%{q.strip()}%"
         path_column = _path_for_document(DocumentText.document_id)
+        refined_keyword = aliased(DocumentKeyword)
+        has_refined = (
+            select(refined_keyword.id)
+            .where(
+                refined_keyword.document_text_id == DocumentText.id,
+                refined_keyword.model_name == model_name,
+            )
+            .exists()
+        )
         with session_factory() as session:
             rows = session.execute(
                 select(
@@ -122,9 +131,16 @@ def create_app(
                 .join(DocumentKeyword)
                 .where(
                     or_(
+                        DocumentKeyword.model_name == model_name,
+                        and_(
+                            DocumentKeyword.model_name == LIGHT_MODEL,
+                            ~has_refined,
+                        ),
+                    ),
+                    or_(
                         DocumentKeyword.keyword.contains(q.strip()),
                         DocumentText.extracted_text.like(pattern),
-                    )
+                    ),
                 )
                 .group_by(DocumentText.id)
                 .order_by(func.max(DocumentKeyword.score).desc())

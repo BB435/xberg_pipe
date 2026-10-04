@@ -9,7 +9,12 @@ from xberg import ExtractionConfig, OcrConfig
 
 from xberg_pipe.chunking import ChunkingConfig, chunk_text, replace_document_chunks
 from xberg_pipe.db import DB_PATH, create_db_engine, init_db
-from xberg_pipe.keywording import DEFAULT_MODEL, RURI_MODELS, KeywordConfig
+from xberg_pipe.keywording import (
+    DEFAULT_MODEL,
+    LIGHT_MODEL,
+    RURI_MODELS,
+    KeywordConfig,
+)
 from xberg_pipe.models import (
     ChunkEmbedding,
     Document,
@@ -49,8 +54,6 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--batch-size", type=int, default=BATCH_SIZE, help="一度に抽出するファイル数"
     )
-    scan.add_argument("--keyword-model", choices=RURI_MODELS, default=DEFAULT_MODEL)
-    scan.add_argument("--device", help="キーフレーズ抽出の実行デバイス")
     scan.add_argument(
         "--ocr-backend", default="paddleocr", help="xberg OCRバックエンド"
     )
@@ -66,6 +69,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--force-ocr", action="store_true", help="ネイティブテキストがあってもOCRする"
     )
     ocr_mode.add_argument("--disable-ocr", action="store_true", help="OCRを無効化する")
+
+    refine = subparsers.add_parser(
+        "refine-keywords", help="保存済み文書のキーフレーズをKeyBERTで精緻化します。"
+    )
+    refine.add_argument("--model", choices=RURI_MODELS, default=DEFAULT_MODEL)
+    refine.add_argument("--device", help="例: cpu, cuda, cuda:0")
+    refine.add_argument("--batch-size", type=int, default=20)
 
     summarize = subparsers.add_parser(
         "summarize", help="Ollamaでファイルごとの要約を生成します。"
@@ -112,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _run_scan(args: argparse.Namespace, session: Session) -> int:
     from xberg_pipe.keywording import (
-        RuriKeyBertExtractor,
+        MorphKeywordExtractor,
         aggregate_chunk_keywords,
         replace_document_keywords,
     )
@@ -133,13 +143,13 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
         ),
         force_ocr=args.force_ocr,
     )
-    keyword_config = KeywordConfig(model_name=args.keyword_model, device=args.device)
+    keyword_config = KeywordConfig(model_name=LIGHT_MODEL)
     extractor = None
 
     def postprocess(session: Session, document_text: DocumentText) -> None:
         nonlocal extractor
         if extractor is None:
-            extractor = RuriKeyBertExtractor(keyword_config)
+            extractor = MorphKeywordExtractor(keyword_config.max_ngram)
         chunks = chunk_text(document_text.extracted_text)
         session.flush()
         has_chunks = session.scalar(
@@ -182,6 +192,28 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
         f"スキップ={result.skipped} 失敗={result.failed}"
     )
     return 1 if result.failed else 0
+
+
+def _run_refine_keywords(args: argparse.Namespace, session: Session) -> int:
+    from xberg_pipe.keywording import rebuild_all_keywords
+
+    config = KeywordConfig(model_name=args.model, device=args.device)
+    print("KeyBERTによるキーフレーズ精緻化を開始します。", flush=True)
+    result = rebuild_all_keywords(
+        session,
+        config=config,
+        batch_size=args.batch_size,
+        progress=lambda current: print(
+            f"精緻化中: 処理文書={current.documents} "
+            f"保存キーフレーズ={current.keywords} スキップ={current.skipped}",
+            flush=True,
+        ),
+    )
+    print(
+        f"処理文書={result.documents} 保存キーフレーズ={result.keywords} "
+        f"スキップ={result.skipped}"
+    )
+    return 0
 
 
 def _run_stats(session: Session) -> int:
@@ -300,6 +332,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         with session_factory() as session:
             if args.command == "scan":
                 return _run_scan(args, session)
+            if args.command == "refine-keywords":
+                return _run_refine_keywords(args, session)
             if args.command == "summarize":
                 return _run_summarize(args, session)
             if args.command == "embed":

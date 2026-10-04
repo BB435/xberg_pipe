@@ -134,6 +134,7 @@ class ScanExtractor:
                 exists().where(
                     DocumentSummary.document_text_id == DocumentText.id,
                     DocumentSummary.model_name == "extractive-ja-v1",
+                    DocumentSummary.prompt_version == "extractive-v2",
                 ),
             )
             .join(DocumentPath.document)
