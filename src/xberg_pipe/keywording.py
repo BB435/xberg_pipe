@@ -9,11 +9,8 @@ from sqlalchemy.orm import Session, selectinload
 from xberg_pipe.chunking import clean_extracted_text
 from xberg_pipe.models import DocumentKeyword, DocumentText
 
-DEFAULT_MODEL = "cl-nagoya/ruri-v3-30m"
-RURI_MODELS = (
-    DEFAULT_MODEL,
-    "cl-nagoya/ruri-v3-310m",
-)
+DEFAULT_MODEL = "sirasagi62/ruri-v3-30m-ONNX"
+RURI_MODELS = (DEFAULT_MODEL,)
 TOPIC_PREFIX = "トピック: "
 
 _TARGET_POS = {"名詞", "形容詞"}
@@ -70,7 +67,8 @@ class RuriKeyBertExtractor:
             from fugashi import Tagger
             from keybert import KeyBERT
             from keybert.backend import BaseEmbedder
-            from sentence_transformers import SentenceTransformer
+
+            from xberg_pipe.fastembed_model import create_ruri_model
         except ImportError as error:
             raise RuntimeError(
                 "キーワード抽出依存がありません。uv sync --extra keywords を実行してください。"
@@ -83,14 +81,9 @@ class RuriKeyBertExtractor:
 
             def embed(self, documents, verbose: bool = False):
                 topical_documents = [TOPIC_PREFIX + document for document in documents]
-                return self.model.encode(
-                    topical_documents,
-                    show_progress_bar=verbose,
-                    convert_to_numpy=True,
-                    normalize_embeddings=True,
-                )
+                return list(self.model.embed(topical_documents))
 
-        model = SentenceTransformer(config.model_name, device=config.device)
+        model = create_ruri_model(config.model_name, config.device)
         self._keybert = KeyBERT(model=RuriTopicEmbedder(model))
         self._tagger = Tagger()
         self._config = config

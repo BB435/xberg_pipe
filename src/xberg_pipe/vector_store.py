@@ -13,11 +13,9 @@ DOCUMENT_PREFIX = "検索文書: "
 QUERY_PREFIX = "検索クエリ: "
 MODEL_DIMENSIONS = {
     DEFAULT_MODEL: 256,
-    "cl-nagoya/ruri-v3-310m": 768,
 }
 MODEL_TABLES = {
-    DEFAULT_MODEL: "vec_ruri_v3_30m",
-    "cl-nagoya/ruri-v3-310m": "vec_ruri_v3_310m",
+    DEFAULT_MODEL: "vec_ruri_v3_30m_onnx",
 }
 
 
@@ -95,22 +93,16 @@ class Encoder(Protocol):
 class RuriEncoder:
     def __init__(self, config: EmbeddingConfig) -> None:
         try:
-            from sentence_transformers import SentenceTransformer
+            from xberg_pipe.fastembed_model import create_ruri_model
         except ImportError as error:
             raise RuntimeError(
                 "ベクトル生成依存がありません。uv sync --extra vectors を実行してください。"
             ) from error
-        self.model = SentenceTransformer(config.model_name, device=config.device)
+        self.model = create_ruri_model(config.model_name, config.device)
         self.batch_size = config.batch_size
 
     def encode(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
-        return self.model.encode(
-            list(texts),
-            batch_size=self.batch_size,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=True,
-        )
+        return list(self.model.embed(list(texts), batch_size=self.batch_size))
 
 
 def _serialize(vector: Sequence[float]) -> bytes:

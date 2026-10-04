@@ -17,11 +17,11 @@ dependencies = [
 keywords = [
     "fugashi>=1.5.2",
     "keybert>=0.9.0",
-    "sentence-transformers>=3.4.1",
+    "fastembed>=0.7.0",
     "unidic-lite>=1.0.8",
 ]
 vectors = [
-    "sentence-transformers>=3.4.1",
+    "fastembed>=0.7.0",
     "sqlite-vec>=0.1.6",
 ]
 vis = [
