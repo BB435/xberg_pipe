@@ -5,6 +5,7 @@ from pathlib import Path
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
+from tqdm.auto import tqdm
 from xberg import ExtractionConfig, OcrConfig
 
 from xberg_pipe.chunking import ChunkingConfig, chunk_text, replace_document_chunks
@@ -30,6 +31,11 @@ from xberg_pipe.summarization import (
     DEFAULT_OLLAMA_HOST,
     DEFAULT_SUMMARY_MODEL,
 )
+
+
+def _advance_progress(bar: tqdm, completed: int, **details: int) -> None:
+    bar.set_postfix(details, refresh=False)
+    bar.update(completed - bar.n)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -177,29 +183,28 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
             ),
         )
 
-    print("走査を開始します。", flush=True)
-    result = asyncio.run(
-        ScanExtractor(
-            session,
-            root,
-            extraction_config=extraction_config,
-            batch_size=args.batch_size,
-            postprocess=postprocess,
-            required_summary=(
-                provisional_summary.MODEL_NAME,
-                provisional_summary.PROMPT_VERSION,
-            ),
-            progress=lambda current: print(
-                f"走査中: 検出={current.discovered} 抽出={current.extracted} "
-                f"スキップ={current.skipped} 失敗={current.failed}",
-                flush=True,
-            ),
-        ).scan()
-    )
-    print(
-        f"検出={result.discovered} 抽出={result.extracted} "
-        f"スキップ={result.skipped} 失敗={result.failed}"
-    )
+    with tqdm(desc="走査中", unit="件") as bar:
+        result = asyncio.run(
+            ScanExtractor(
+                session,
+                root,
+                extraction_config=extraction_config,
+                batch_size=args.batch_size,
+                postprocess=postprocess,
+                required_summary=(
+                    provisional_summary.MODEL_NAME,
+                    provisional_summary.PROMPT_VERSION,
+                ),
+                progress=lambda current: _advance_progress(
+                    bar,
+                    current.extracted + current.skipped + current.failed,
+                    抽出=current.extracted,
+                    スキップ=current.skipped,
+                    失敗=current.failed,
+                ),
+            ).scan()
+        )
+    print(f"抽出={result.extracted} スキップ={result.skipped} 失敗={result.failed}")
     return 1 if result.failed else 0
 
 
@@ -207,17 +212,18 @@ def _run_refine_keywords(args: argparse.Namespace, session: Session) -> int:
     from xberg_pipe.keywording import rebuild_all_keywords
 
     config = KeywordConfig(model_name=args.model, device=args.device)
-    print("KeyBERTによるキーフレーズ精緻化を開始します。", flush=True)
-    result = rebuild_all_keywords(
-        session,
-        config=config,
-        batch_size=args.batch_size,
-        progress=lambda current: print(
-            f"精緻化中: 処理文書={current.documents} "
-            f"保存キーフレーズ={current.keywords} スキップ={current.skipped}",
-            flush=True,
-        ),
-    )
+    with tqdm(desc="精緻化中", unit="文書") as bar:
+        result = rebuild_all_keywords(
+            session,
+            config=config,
+            batch_size=args.batch_size,
+            progress=lambda current: _advance_progress(
+                bar,
+                current.documents + current.skipped,
+                キーフレーズ=current.keywords,
+                スキップ=current.skipped,
+            ),
+        )
     print(
         f"処理文書={result.documents} 保存キーフレーズ={result.keywords} "
         f"スキップ={result.skipped}"
@@ -255,16 +261,18 @@ def _run_summarize(args: argparse.Namespace, session: Session) -> int:
         think=args.think,
         keep_alive=args.keep_alive,
     )
-    print("要約生成を開始します。", flush=True)
-    result = rebuild_all_summaries(
-        session,
-        config,
-        progress=lambda current: print(
-            f"要約生成中: 処理文書={current.documents} "
-            f"失敗={current.failed} スキップ={current.skipped}",
-            flush=True,
-        ),
-    )
+    with tqdm(desc="要約生成中", unit="文書") as bar:
+        result = rebuild_all_summaries(
+            session,
+            config,
+            progress=lambda current: _advance_progress(
+                bar,
+                current.documents + current.failed + current.skipped,
+                完了=current.documents,
+                失敗=current.failed,
+                スキップ=current.skipped,
+            ),
+        )
     print(f"処理文書={result.documents} 失敗={result.failed} スキップ={result.skipped}")
     return 1 if result.failed else 0
 
@@ -275,14 +283,12 @@ def _run_embed(args: argparse.Namespace) -> int:
     config = EmbeddingConfig(
         model_name=args.model, device=args.device, batch_size=args.batch_size
     )
-    print("埋め込み生成を開始します。", flush=True)
-    result = rebuild_embeddings(
-        args.database,
-        config,
-        progress=lambda current: print(
-            f"埋め込み生成中: 生成ベクトル={current.chunks}", flush=True
-        ),
-    )
+    with tqdm(desc="埋め込み生成中", unit="ベクトル") as bar:
+        result = rebuild_embeddings(
+            args.database,
+            config,
+            progress=lambda current: _advance_progress(bar, current.chunks),
+        )
     print(f"生成ベクトル={result.chunks} モデル={config.model_name}")
     return 0
 

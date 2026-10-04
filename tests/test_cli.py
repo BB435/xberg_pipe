@@ -69,3 +69,42 @@ def test_scan_saves_light_keywords_without_keybert(tmp_path: Path, monkeypatch) 
         assert {
             item.model_name for item in session.scalars(select(DocumentKeyword))
         } == {LIGHT_MODEL}
+
+
+def test_scan_progress_has_no_total(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("人工知能の研究です。", encoding="utf-8")
+    database = tmp_path / "test.db"
+    bars = []
+
+    class FakeBar:
+        def __init__(self, **options):
+            self.options = options
+            self.n = 0
+            bars.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _type, _value, _traceback):
+            return False
+
+        def set_postfix(self, details, refresh=False):
+            self.details = details
+
+        def update(self, amount):
+            self.n += amount
+
+    async def fake_extract_batch(_inputs, _config):
+        return SimpleNamespace(
+            results=[SimpleNamespace(content="人工知能の研究です。")], errors=[]
+        )
+
+    monkeypatch.setattr("xberg_pipe.cli.tqdm", FakeBar)
+    monkeypatch.setattr("xberg_pipe.scan_extractor.extract_batch", fake_extract_batch)
+
+    assert main(["--database", str(database), "scan", str(tmp_path)]) == 0
+    assert len(bars) == 1
+    assert "total" not in bars[0].options
+    assert bars[0].n == 1
+    assert bars[0].details == {"抽出": 1, "スキップ": 0, "失敗": 0}
