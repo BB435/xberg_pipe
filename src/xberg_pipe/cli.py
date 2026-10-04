@@ -3,7 +3,7 @@ import asyncio
 from collections.abc import Sequence
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from xberg import ExtractionConfig, OcrConfig
 
@@ -122,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _run_scan(args: argparse.Namespace, session: Session) -> int:
     from xberg_pipe.keywording import (
-        MorphKeywordExtractor,
+        YakeKeywordExtractor,
         aggregate_chunk_keywords,
         replace_document_keywords,
     )
@@ -149,7 +149,7 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
     def postprocess(session: Session, document_text: DocumentText) -> None:
         nonlocal extractor
         if extractor is None:
-            extractor = MorphKeywordExtractor(keyword_config.max_ngram)
+            extractor = YakeKeywordExtractor(keyword_config.max_ngram)
         chunks = chunk_text(document_text.extracted_text)
         session.flush()
         has_chunks = session.scalar(
@@ -165,6 +165,12 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
         )
         replace_document_keywords(
             session, document_text, keywords, keyword_config.model_name
+        )
+        session.execute(
+            delete(DocumentKeyword).where(
+                DocumentKeyword.document_text_id == document_text.id,
+                DocumentKeyword.model_name == "ja-morph-v1",
+            )
         )
         replace_provisional_summary(
             session,

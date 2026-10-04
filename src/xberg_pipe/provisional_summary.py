@@ -75,7 +75,7 @@ def replace_provisional_summary(
             document_text=document_text,
             model_name=MODEL_NAME,
             endpoint="local",
-            prompt_version="extractive-v2",
+            prompt_version="extractive-v3",
             summary=summary,
         )
     )

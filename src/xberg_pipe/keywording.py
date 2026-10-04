@@ -1,3 +1,4 @@
+import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ from xberg_pipe.models import DocumentKeyword, DocumentText
 DEFAULT_MODEL = "sirasagi62/ruri-v3-30m-ONNX"
 RURI_MODELS = (DEFAULT_MODEL,)
 TOPIC_PREFIX = "トピック: "
-LIGHT_MODEL = "ja-morph-v1"
+LIGHT_MODEL = "ja-yake-v1"
 
 _TARGET_POS = {"名詞", "形容詞"}
 _STOP_WORDS = {
@@ -61,46 +62,48 @@ class KeywordExtractor(Protocol):
     def extract(self, text: str, top_n: int) -> list[tuple[str, float]]: ...
 
 
-class MorphKeywordExtractor:
-    """形態素の品詞・頻度・初出位置からキーフレーズを選ぶ。"""
+_JAPANESE_SPACES = re.compile(
+    r"(?<=[\u3040-\u30ff\u3400-\u9fff])\s+(?=[\u3040-\u30ff\u3400-\u9fff])"
+)
+
+
+class YakeKeywordExtractor:
+    """日本語を分かち書きしてYAKEでキーフレーズを選ぶ。"""
 
     def __init__(self, max_ngram: int = 3) -> None:
         from fugashi import Tagger
+        from yake import KeywordExtractor
 
         self._tagger = Tagger()
-        self.max_ngram = max_ngram
+        self._extractor_type = KeywordExtractor
+        self._max_ngram = max_ngram
 
     def extract(self, text: str, top_n: int) -> list[tuple[str, float]]:
-        tokens = [
-            (word.surface.strip(), getattr(word.feature, "pos1", ""))
-            for word in self._tagger(text)
-        ]
-        counts: Counter[str] = Counter()
-        first_positions: dict[str, int] = {}
-        for start in range(len(tokens)):
-            parts: list[str] = []
-            for surface, pos in tokens[start : start + self.max_ngram]:
-                if pos not in _TARGET_POS or not surface:
-                    break
+        phrases: list[str] = []
+        parts: list[str] = []
+        for word in self._tagger(text):
+            surface = word.surface.strip()
+            if surface and getattr(word.feature, "pos1", "") in _TARGET_POS:
                 parts.append(surface)
-                candidate = "".join(parts)
-                if (
-                    len(candidate) >= 2
-                    and candidate not in _STOP_WORDS
-                    and not candidate.isnumeric()
-                ):
-                    counts[candidate] += 1
-                    first_positions.setdefault(candidate, start)
-        ranked = sorted(
-            counts,
-            key=lambda word: (
-                -(counts[word] * (1 + min(len(word), 12) / 12)),
-                first_positions[word],
-                word,
-            ),
-        )[:top_n]
-        highest = max((counts[word] for word in ranked), default=1)
-        return [(word, round(counts[word] / highest, 6)) for word in ranked]
+            elif parts:
+                phrases.append("".join(parts))
+                parts.clear()
+        if parts:
+            phrases.append("".join(parts))
+        segmented = " ".join(phrases)
+        if not segmented:
+            return []
+        extractor = self._extractor_type(lan="ja", n=self._max_ngram, top=top_n)
+        keywords = extractor.extract_keywords(segmented)
+        results: list[tuple[str, float]] = []
+        seen: set[str] = set()
+        for phrase, score in keywords:
+            phrase = _JAPANESE_SPACES.sub("", phrase).strip()
+            if len(phrase) < 2 or phrase in seen or phrase not in text:
+                continue
+            seen.add(phrase)
+            results.append((phrase, round(1 / (1 + float(score)), 6)))
+        return results
 
 
 class RuriKeyBertExtractor:

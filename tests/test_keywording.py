@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from xberg_pipe.chunking import replace_document_chunks
 from xberg_pipe.keywording import (
     KeywordConfig,
-    MorphKeywordExtractor,
     RuriKeyBertExtractor,
+    YakeKeywordExtractor,
     aggregate_chunk_keywords,
     extract_document_keywords,
     rebuild_all_keywords,
@@ -24,8 +24,8 @@ class FakeExtractor:
         return [("自然言語処理", 0.8), ("機械学習", 0.6)][:top_n]
 
 
-def test_morph_keywords_extracts_japanese_phrases_without_keybert() -> None:
-    keywords = MorphKeywordExtractor().extract(
+def test_yake_keywords_extracts_japanese_phrases_without_keybert() -> None:
+    keywords = YakeKeywordExtractor().extract(
         "人工知能の研究を進めます。人工知能の活用を検討します。", top_n=5
     )
 

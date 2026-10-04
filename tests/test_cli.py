@@ -60,3 +60,12 @@ def test_scan_saves_light_keywords_without_keybert(tmp_path: Path, monkeypatch) 
         assert keyword is not None
         assert keyword.model_name == LIGHT_MODEL
         assert session.scalar(select(DocumentSummary)) is not None
+        keyword.model_name = "ja-morph-v1"
+        session.scalar(select(DocumentSummary)).prompt_version = "extractive-v2"
+        session.commit()
+
+    assert main(["--database", str(database), "scan", str(tmp_path)]) == 0
+    with Session(create_engine(f"sqlite:///{database.as_posix()}")) as session:
+        assert {
+            item.model_name for item in session.scalars(select(DocumentKeyword))
+        } == {LIGHT_MODEL}
