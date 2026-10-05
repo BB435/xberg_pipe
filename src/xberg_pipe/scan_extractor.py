@@ -181,6 +181,10 @@ class ScanExtractor:
                     self.progress(result)
                 continue
 
+            source_stats = {}
+            for path in changed_paths:
+                stat = path.stat()
+                source_stats[path] = (stat.st_size, stat.st_mtime_ns)
             try:
                 extraction = await extract_batch(
                     [
@@ -212,6 +216,11 @@ class ScanExtractor:
 
                 try:
                     extracted = next(documents)
+                    stat = path.stat()
+                    if (stat.st_size, stat.st_mtime_ns) != source_stats[path]:
+                        result.failed += 1
+                        logger.warning(f"File changed during extraction: {path}")
+                        continue
                     document_text = self._save(path, extracted.content)
                     if self.postprocess is not None:
                         self.postprocess(self.session, document_text)

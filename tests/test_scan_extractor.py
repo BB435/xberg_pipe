@@ -253,3 +253,42 @@ def test_scan_removes_deleted_file_and_orphaned_document(tmp_path: Path) -> None
 
         assert session.scalar(select(func.count()).select_from(Document)) == 0
         assert session.scalar(select(func.count()).select_from(DocumentText)) == 0
+
+
+def test_file_changed_during_extraction_is_retried_without_shifting_results(
+    tmp_path: Path, monkeypatch
+) -> None:
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("old", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    calls = 0
+
+    async def fake_extract_batch(_inputs, _config):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first.write_text("new content", encoding="utf-8")
+            contents = ["old extracted", "second extracted"]
+        else:
+            contents = ["new extracted"]
+        return SimpleNamespace(
+            results=[SimpleNamespace(content=content) for content in contents],
+            errors=[],
+        )
+
+    monkeypatch.setattr("xberg_pipe.scan_extractor.extract_batch", fake_extract_batch)
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        extractor = ScanExtractor(session, tmp_path)
+        result = asyncio.run(extractor.scan())
+        assert (result.extracted, result.failed) == (1, 1)
+        assert session.scalar(select(DocumentText.extracted_text)) == "second extracted"
+
+        result = asyncio.run(extractor.scan())
+        assert (result.extracted, result.skipped) == (1, 1)
+        assert set(session.scalars(select(DocumentText.extracted_text))) == {
+            "new extracted",
+            "second extracted",
+        }
