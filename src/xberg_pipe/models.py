@@ -55,7 +55,15 @@ class DocumentText(Base):
     extractor: Mapped[str] = mapped_column(String(20))
     """抽出機"""
     extracted_text: Mapped[str] = mapped_column(Text)
-    """テキスト"""
+    """抽出された原文"""
+    cleaned_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """後工程で使用するクリーニング済み本文"""
+
+    @property
+    def processing_text(self) -> str:
+        return (
+            self.cleaned_text if self.cleaned_text is not None else self.extracted_text
+        )
 
     document: Mapped[Document] = relationship(back_populates="texts")
     chunks: Mapped[list[DocumentChunk]] = relationship(

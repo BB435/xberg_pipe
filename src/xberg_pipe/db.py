@@ -1,9 +1,10 @@
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
-from xberg_pipe.models import Base
+from xberg_pipe.models import Base, DocumentText
 
 DB_PATH = "data/app.db"
 
@@ -28,3 +29,23 @@ def create_db_engine(db_path: str | Path = DB_PATH) -> Engine:
 
 def init_db(db_engine: Engine) -> None:
     Base.metadata.create_all(db_engine)
+    columns = {
+        column["name"] for column in inspect(db_engine).get_columns("document_texts")
+    }
+    if "cleaned_text" not in columns:
+        with db_engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE document_texts ADD COLUMN cleaned_text TEXT")
+            )
+    from xberg_pipe.chunking import clean_extracted_text
+    from xberg_pipe.repository import delete_document_derivatives
+
+    with Session(db_engine) as session:
+        for document_text in session.scalars(
+            select(DocumentText).where(DocumentText.cleaned_text.is_(None))
+        ):
+            cleaned = clean_extracted_text(document_text.extracted_text)
+            if cleaned != document_text.extracted_text:
+                delete_document_derivatives(session, document_text)
+            document_text.cleaned_text = cleaned
+        session.commit()

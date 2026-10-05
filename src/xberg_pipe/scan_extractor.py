@@ -9,6 +9,7 @@ from loguru import logger
 from sqlalchemy import exists, func, select, true
 from xberg import ExtractInput, ExtractionConfig, OcrConfig, extract_batch
 
+from xberg_pipe.chunking import clean_extracted_text
 from xberg_pipe.models import Document, DocumentPath, DocumentSummary, DocumentText
 from xberg_pipe.repository import (
     delete_document_derivatives,
@@ -246,6 +247,7 @@ class ScanExtractor:
         elif document_text.extracted_text != text:
             delete_document_derivatives(self.session, document_text)
         document_text.extracted_text = text
+        document_text.cleaned_text = clean_extracted_text(text)
         self._delete_document_if_orphaned(previous_document, except_document=document)
         return document_text
 

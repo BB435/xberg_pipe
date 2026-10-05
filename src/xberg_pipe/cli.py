@@ -159,7 +159,7 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
         nonlocal extractor
         if extractor is None:
             extractor = YakeKeywordExtractor(keyword_config.max_ngram)
-        chunks = chunk_text(document_text.extracted_text)[:MAX_DOWNSTREAM_CHUNKS]
+        chunks = chunk_text(document_text.processing_text)[:MAX_DOWNSTREAM_CHUNKS]
         session.flush()
         chunker_version = session.scalar(
             select(DocumentChunk.chunker_version)
@@ -185,7 +185,7 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
             session,
             document_text,
             provisional_summary.summarize_extractively(
-                document_text.extracted_text, keywords
+                document_text.processing_text, keywords
             ),
         )
 

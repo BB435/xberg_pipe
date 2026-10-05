@@ -55,7 +55,7 @@ def test_scan_saves_postprocessing_with_extraction(tmp_path: Path, monkeypatch) 
         assert asyncio.run(extractor.scan()).skipped == 1
 
 
-def test_save_only_persists_extracted_text(tmp_path: Path) -> None:
+def test_save_persists_original_and_cleaned_text(tmp_path: Path) -> None:
     source = tmp_path / "document.txt"
     source.write_text("抽出対象の本文です。", encoding="utf-8")
     engine = create_engine("sqlite://")
@@ -63,18 +63,20 @@ def test_save_only_persists_extracted_text(tmp_path: Path) -> None:
 
     with Session(engine) as session:
         extractor = ScanExtractor(session, tmp_path)
-        extractor._save(source, "抽出された本文です。")
+        extractor._save(source, "抽 出 さ れ た\n本文です。")
         session.commit()
 
         document_text = session.scalar(select(DocumentText))
         chunk_count = session.scalar(select(func.count()).select_from(DocumentChunk))
         assert document_text is not None
-        assert document_text.extracted_text == "抽出された本文です。"
+        assert document_text.extracted_text == "抽 出 さ れ た\n本文です。"
+        assert document_text.cleaned_text == "抽出された本文です。"
         assert chunk_count == 0
 
         replace_document_chunks(session, document_text)
         session.commit()
         assert session.scalar(select(func.count()).select_from(DocumentChunk)) == 1
+        assert session.scalar(select(DocumentChunk.content)) == "抽出された本文です。"
 
 
 def test_custom_postprocess_does_not_require_a_summary(

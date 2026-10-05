@@ -19,6 +19,12 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _TRAILING_SPACE = re.compile(r"[ \t]+(?=\n|$)")
 _EXCESS_BLANK_LINES = re.compile(r"\n{3,}")
 _LATIN_LINE_HYPHEN = re.compile(r"(?<=[A-Za-z])-\s*\n\s*(?=[A-Za-z])")
+_JAPANESE_SPACES = re.compile(
+    r"(?<=[\u3040-\u30ff\u3400-\u9fff]) +(?=[\u3040-\u30ff\u3400-\u9fff])"
+)
+_JAPANESE_LINE_BREAK = re.compile(
+    r"(?<=[\u3040-\u30ff\u3400-\u9fff])\n(?=[\u3040-\u30ff\u3400-\u9fff])"
+)
 _SENTENCE = re.compile(r".*?(?:[。！？!?]+[」』】）》〕〉］）”’]*|$)", re.DOTALL)
 _PREFERRED_BREAKS = ("\n", "。", "！", "？", "、", "，", ",", " ")
 
@@ -53,6 +59,8 @@ def clean_extracted_text(text: str) -> str:
     text = _LATIN_LINE_HYPHEN.sub("", text)
     text = _TRAILING_SPACE.sub("", text)
     text = _EXCESS_BLANK_LINES.sub("\n\n", text)
+    text = _JAPANESE_SPACES.sub("", text)
+    text = _JAPANESE_LINE_BREAK.sub("", text)
     return text.strip()
 
 
@@ -137,7 +145,7 @@ def replace_document_chunks(
 
     session.flush()
     delete_document_derivatives(session, document_text)
-    chunks = chunk_text(document_text.extracted_text, config)[:MAX_DOWNSTREAM_CHUNKS]
+    chunks = chunk_text(document_text.processing_text, config)[:MAX_DOWNSTREAM_CHUNKS]
     session.add_all(
         DocumentChunk(
             document_text=document_text,

@@ -210,7 +210,7 @@ def extract_document_keywords(
     )
     if not document_text.chunks:
         # 未チャンキング文書の全文をKeyBERTへ渡すとメモリ使用量が急増する。
-        texts = iter(chunk_text(document_text.extracted_text)[:MAX_DOWNSTREAM_CHUNKS])
+        texts = iter(chunk_text(document_text.processing_text)[:MAX_DOWNSTREAM_CHUNKS])
     per_chunk_top_n = max(config.top_n * 3, config.top_n)
     return aggregate_chunk_keywords(
         (extractor.extract(text, per_chunk_top_n) for text in texts), config.top_n
@@ -264,7 +264,7 @@ def rebuild_all_keywords(
         .execution_options(yield_per=batch_size)
     )
     for document_text in session.scalars(statement):
-        if not document_text.extracted_text.strip():
+        if not document_text.processing_text.strip():
             result.skipped += 1
             if progress is not None:
                 progress(result)

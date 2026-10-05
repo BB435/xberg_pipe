@@ -18,6 +18,13 @@ def test_clean_extracted_text_normalizes_common_extraction_noise() -> None:
     assert clean_extracted_text(source) == "ABC\n改行前のinternational\n\n次の段落"
 
 
+def test_clean_extracted_text_joins_japanese_extraction_gaps() -> None:
+    assert (
+        clean_extracted_text("日 本 語\nの本文。\n\n次の段落")
+        == "日本語の本文。\n\n次の段落"
+    )
+
+
 def test_chunk_text_prefers_japanese_sentence_boundaries_and_overlaps() -> None:
     source = "第一文です。第二文も重要です。第三文で詳しく説明します。第四文です。"
     chunks = chunk_text(source, ChunkingConfig(target_chars=25, overlap_chars=10))

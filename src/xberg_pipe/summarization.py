@@ -140,7 +140,7 @@ def summarize_document(
         for chunk in document_text.chunks[:MAX_DOWNSTREAM_CHUNKS]
     ]
     if not chunks:
-        chunks = chunk_text(document_text.extracted_text)[:MAX_DOWNSTREAM_CHUNKS]
+        chunks = chunk_text(document_text.processing_text)[:MAX_DOWNSTREAM_CHUNKS]
     if not chunks:
         return ""
 
@@ -206,7 +206,7 @@ def rebuild_all_summaries(
             .options(selectinload(DocumentText.chunks))
             .where(DocumentText.id == document_text_id)
         )
-        if document_text is None or not document_text.extracted_text.strip():
+        if document_text is None or not document_text.processing_text.strip():
             result.skipped += 1
             if progress is not None:
                 progress(result)

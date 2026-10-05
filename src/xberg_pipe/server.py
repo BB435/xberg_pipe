@@ -81,9 +81,12 @@ def create_app(
         if document_ids:
             with session_factory() as session:
                 rows = session.execute(
-                    select(DocumentText.document_id, DocumentText.extracted_text).where(
-                        DocumentText.document_id.in_(document_ids)
-                    )
+                    select(
+                        DocumentText.document_id,
+                        func.coalesce(
+                            DocumentText.cleaned_text, DocumentText.extracted_text
+                        ),
+                    ).where(DocumentText.document_id.in_(document_ids))
                 )
                 previews = {
                     document_id: _preview(text, preview_chars)
@@ -130,7 +133,9 @@ def create_app(
             rows = session.execute(
                 select(
                     DocumentText.document_id,
-                    DocumentText.extracted_text,
+                    func.coalesce(
+                        DocumentText.cleaned_text, DocumentText.extracted_text
+                    ).label("cleaned_text"),
                     path_column.label("path"),
                     func.max(DocumentKeyword.score).label("score"),
                     func.group_concat(DocumentKeyword.keyword, ", ").label("keywords"),
@@ -151,7 +156,9 @@ def create_app(
                 .where(
                     or_(
                         DocumentKeyword.keyword.contains(query, autoescape=True),
-                        DocumentText.extracted_text.like(pattern, escape="\\"),
+                        func.coalesce(
+                            DocumentText.cleaned_text, DocumentText.extracted_text
+                        ).like(pattern, escape="\\"),
                     ),
                 )
                 .group_by(DocumentText.id)
@@ -167,7 +174,7 @@ def create_app(
                     "path": row.path,
                     "score": row.score,
                     "keywords": row.keywords.split(", ") if row.keywords else [],
-                    "preview": _preview(row.extracted_text, preview_chars),
+                    "preview": _preview(row.cleaned_text, preview_chars),
                 }
                 for row in rows
             ],
