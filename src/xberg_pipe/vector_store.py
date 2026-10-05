@@ -140,22 +140,28 @@ def rebuild_embeddings(
     config: EmbeddingConfig | None = None,
     encoder: Encoder | None = None,
     progress: Callable[[EmbeddingResult], None] | None = None,
+    all_items: bool = False,
 ) -> EmbeddingResult:
     config = config or EmbeddingConfig()
-    encoder = encoder or RuriEncoder(config)
     connection = _connect(db_path)
     result = EmbeddingResult()
     try:
         table = _ensure_vector_table(connection, config.model_name)
-        connection.execute(f"DELETE FROM {table}")
-        connection.execute(
-            "DELETE FROM chunk_embeddings WHERE model_name = ?",
+        if all_items:
+            connection.execute(f"DELETE FROM {table}")
+            connection.execute(
+                "DELETE FROM chunk_embeddings WHERE model_name = ?",
+                (config.model_name,),
+            )
+        cursor = connection.execute(
+            "SELECT chunks.id, chunks.content FROM document_chunks AS chunks "
+            "LEFT JOIN chunk_embeddings AS stored ON stored.chunk_id = chunks.id "
+            "AND stored.model_name = ? WHERE stored.id IS NULL ORDER BY chunks.id",
             (config.model_name,),
         )
-        cursor = connection.execute(
-            "SELECT id, content FROM document_chunks ORDER BY id"
-        )
         while rows := cursor.fetchmany(config.batch_size):
+            if encoder is None:
+                encoder = RuriEncoder(config)
             texts = [DOCUMENT_PREFIX + row[1] for row in rows]
             vectors = encoder.encode(texts)
             if any(

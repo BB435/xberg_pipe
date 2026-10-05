@@ -111,6 +111,24 @@ def test_rebuild_all_summaries_saves_reduced_summary(tmp_path: Path) -> None:
         assert summary.summary == f"要約{client.calls}"
         assert client.calls >= 3
         assert progress == [(1, 0, 0)]
+        calls = client.calls
+        assert (
+            rebuild_all_summaries(
+                session, SummaryConfig(model_name="local/test"), client=client
+            ).documents
+            == 0
+        )
+        assert client.calls == calls
+        assert (
+            rebuild_all_summaries(
+                session,
+                SummaryConfig(model_name="local/test"),
+                client=client,
+                all_items=True,
+            ).documents
+            == 1
+        )
+        assert client.calls > calls
 
 
 def test_llm_summary_limits_existing_long_chunks() -> None:

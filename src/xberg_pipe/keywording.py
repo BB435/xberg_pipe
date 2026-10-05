@@ -249,6 +249,7 @@ def rebuild_all_keywords(
     batch_size: int = 20,
     extractor: RuriKeyBertExtractor | None = None,
     progress: Callable[[KeywordResult], None] | None = None,
+    all_items: bool = False,
 ) -> KeywordResult:
     """保存済み文書をKeyBERTで処理し、ファイル単位のキーワードを保存する."""
 
@@ -263,6 +264,15 @@ def rebuild_all_keywords(
         .order_by(DocumentText.id)
         .execution_options(yield_per=batch_size)
     )
+    if not all_items:
+        statement = statement.where(
+            ~select(DocumentKeyword.id)
+            .where(
+                DocumentKeyword.document_text_id == DocumentText.id,
+                DocumentKeyword.model_name == config.model_name,
+            )
+            .exists()
+        )
     for document_text in session.scalars(statement):
         if not document_text.processing_text.strip():
             result.skipped += 1

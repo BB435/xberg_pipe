@@ -196,10 +196,22 @@ def rebuild_all_summaries(
     config: SummaryConfig,
     client: SummaryClient | None = None,
     progress: Callable[[SummaryResult], None] | None = None,
+    all_items: bool = False,
 ) -> SummaryResult:
     client = client or OllamaSummaryClient(config)
     result = SummaryResult()
-    ids = session.scalars(select(DocumentText.id).order_by(DocumentText.id)).all()
+    statement = select(DocumentText.id).order_by(DocumentText.id)
+    if not all_items:
+        statement = statement.where(
+            ~select(DocumentSummary.id)
+            .where(
+                DocumentSummary.document_text_id == DocumentText.id,
+                DocumentSummary.model_name == config.model_name,
+                DocumentSummary.prompt_version == PROMPT_VERSION,
+            )
+            .exists()
+        )
+    ids = session.scalars(statement).all()
     for document_text_id in ids:
         document_text = session.scalar(
             select(DocumentText)

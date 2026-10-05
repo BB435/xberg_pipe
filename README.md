@@ -32,6 +32,10 @@ uv sync --extra keywords --group dev
 uv run xberg-pipe refine-keywords
 ```
 
+`refine-keywords`、`summarize`、`embed`は通常、選択したモデル・版の結果が
+未保存の項目だけ処理します。保存済みの結果も含めて再生成する場合は、各コマンドに
+`--all`を指定します（例: `uv run xberg-pipe embed --all`）。
+
 既存のデータベースも次の`scan`で軽量なキーフレーズを生成します。
 
 ## 検索サーバー

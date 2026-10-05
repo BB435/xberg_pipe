@@ -88,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     refine.add_argument("--model", choices=RURI_MODELS, default=DEFAULT_MODEL)
     refine.add_argument("--device", help="例: cpu, cuda, cuda:0")
     refine.add_argument("--batch-size", type=int, default=20)
+    refine.add_argument("--all", action="store_true", help="処理済み文書も再実行")
 
     summarize = subparsers.add_parser(
         "summarize", help="Ollamaでファイルごとの要約を生成します。"
@@ -105,6 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     summarize.add_argument("--reduce-group-size", type=int, default=6)
     summarize.add_argument("--think", action="store_true", help="思考モードを有効化")
     summarize.add_argument("--keep-alive", default="10m")
+    summarize.add_argument("--all", action="store_true", help="処理済み文書も再実行")
 
     embed = subparsers.add_parser(
         "embed", help="チャンクの検索用ベクトルをsqlite-vecへ保存します。"
@@ -112,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     embed.add_argument("--model", choices=RURI_MODELS, default=DEFAULT_MODEL)
     embed.add_argument("--device", help="例: cpu, cuda, cuda:0")
     embed.add_argument("--batch-size", type=int, default=32)
+    embed.add_argument("--all", action="store_true", help="生成済みベクトルも再実行")
 
     search = subparsers.add_parser("search", help="sqlite-vecで意味検索します。")
     search.add_argument("query", help="検索文")
@@ -223,6 +226,7 @@ def _run_refine_keywords(args: argparse.Namespace, session: Session) -> int:
             session,
             config=config,
             batch_size=args.batch_size,
+            all_items=args.all,
             progress=lambda current: _advance_progress(
                 bar,
                 current.documents + current.skipped,
@@ -271,6 +275,7 @@ def _run_summarize(args: argparse.Namespace, session: Session) -> int:
         result = rebuild_all_summaries(
             session,
             config,
+            all_items=args.all,
             progress=lambda current: _advance_progress(
                 bar,
                 current.documents + current.failed + current.skipped,
@@ -293,6 +298,7 @@ def _run_embed(args: argparse.Namespace) -> int:
         result = rebuild_embeddings(
             args.database,
             config,
+            all_items=args.all,
             progress=lambda current: _advance_progress(bar, current.chunks),
         )
     print(f"生成ベクトル={result.chunks} モデル={config.model_name}")

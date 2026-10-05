@@ -164,17 +164,26 @@ def rebuild_all_chunks(
     config: ChunkingConfig | None = None,
     batch_size: int = 100,
     progress: Callable[[ChunkingResult], None] | None = None,
+    all_items: bool = False,
 ) -> ChunkingResult:
-    """SQLite内の全抽出テキストを再チャンキングする."""
+    """未処理または旧版の抽出テキストをチャンキングする."""
 
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
 
     result = ChunkingResult()
+    statement = select(DocumentText)
+    if not all_items:
+        statement = statement.where(
+            ~select(DocumentChunk.id)
+            .where(
+                DocumentChunk.document_text_id == DocumentText.id,
+                DocumentChunk.chunker_version == CHUNKER_VERSION,
+            )
+            .exists()
+        )
     document_texts = session.scalars(
-        select(DocumentText)
-        .order_by(DocumentText.id)
-        .execution_options(yield_per=batch_size)
+        statement.order_by(DocumentText.id).execution_options(yield_per=batch_size)
     )
     for document_text in document_texts:
         result.chunks += replace_document_chunks(session, document_text, config)
