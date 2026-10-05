@@ -101,3 +101,30 @@ def test_rechunk_removes_stale_vectors(tmp_path: Path) -> None:
         )
         == []
     )
+
+
+def test_rebuild_repairs_vector_without_metadata(tmp_path: Path) -> None:
+    database = tmp_path / "test.db"
+    engine = create_engine(f"sqlite:///{database.as_posix()}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        document = Document(id="a" * 64, extension=".txt", status="extracted")
+        session.add(
+            DocumentText(
+                document=document, extractor="xberg", extracted_text="人工知能の研究"
+            )
+        )
+        session.flush()
+        replace_document_chunks(session, document.texts[0])
+        session.commit()
+
+    config = EmbeddingConfig()
+    rebuild_embeddings(database, config, FakeEncoder())
+    with engine.begin() as connection:
+        connection.exec_driver_sql("DELETE FROM chunk_embeddings")
+
+    assert rebuild_embeddings(database, config, FakeEncoder()).chunks == 1
+    assert (
+        len(search_embeddings(database, "AI", config=config, encoder=FakeEncoder()))
+        == 1
+    )

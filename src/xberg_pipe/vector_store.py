@@ -168,6 +168,12 @@ def rebuild_embeddings(
                 len(vector) != MODEL_DIMENSIONS[config.model_name] for vector in vectors
             ):
                 raise ValueError("埋め込みベクトルの次元数がモデル定義と一致しません")
+            # A previous interrupted run may have left a vector without its
+            # metadata row. Remove it before inserting the replacement.
+            connection.executemany(
+                f"DELETE FROM {table} WHERE chunk_id = ?",
+                [(row[0],) for row in rows],
+            )
             connection.executemany(
                 f"INSERT INTO {table}(chunk_id, embedding) VALUES (?, ?)",
                 [
