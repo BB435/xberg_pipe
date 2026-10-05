@@ -9,7 +9,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("sqlite_vec")
 from fastapi.testclient import TestClient
 
-from xberg_pipe.chunking import replace_document_chunks
+from xberg_pipe.chunking import clean_extracted_text, replace_document_chunks
 from xberg_pipe.keywording import DEFAULT_MODEL, LIGHT_MODEL
 from xberg_pipe.models import (
     Base,
@@ -51,10 +51,12 @@ def _database(tmp_path: Path) -> Path:
                 path="docs/ai.txt", file_size=10, modified_at=dt.datetime(2026, 1, 1)
             )
         )
+        extracted_text = "  人工知能の\n原文です。  続き"
         text = DocumentText(
             document=document,
             extractor="xberg",
-            extracted_text="  人工知能の\n原文です。  続き",
+            extracted_text=extracted_text,
+            cleaned_text=clean_extracted_text(extracted_text),
         )
         session.add(text)
         replace_document_chunks(session, text)
@@ -66,7 +68,7 @@ def _database(tmp_path: Path) -> Path:
     return database
 
 
-def test_vector_search_returns_original_text_preview(tmp_path: Path) -> None:
+def test_vector_search_returns_cleaned_text_preview(tmp_path: Path) -> None:
     client = TestClient(
         create_app(_database(tmp_path), preview_chars=8, encoder=FakeEncoder())
     )
@@ -76,7 +78,7 @@ def test_vector_search_returns_original_text_preview(tmp_path: Path) -> None:
     assert response.status_code == 200
     result = response.json()["results"][0]
     assert result["path"] == "docs/ai.txt"
-    assert result["preview"] == "人工知能の 原文"
+    assert result["preview"] == "人工知能の原文で"
 
 
 def test_keyword_search_returns_keyword_and_preview(tmp_path: Path) -> None:
@@ -89,7 +91,7 @@ def test_keyword_search_returns_keyword_and_preview(tmp_path: Path) -> None:
     assert response.status_code == 200
     result = response.json()["results"][0]
     assert result["keywords"] == ["AI"]
-    assert result["preview"] == "人工知能の 原文です。 続き"
+    assert result["preview"] == "人工知能の原文です。 続き"
 
 
 def test_keyword_search_prefers_refined_keywords(tmp_path: Path) -> None:
