@@ -140,6 +140,7 @@ def create_app(
                     func.max(DocumentKeyword.score).label("score"),
                     func.group_concat(Keyword.value, ", ").label("keywords"),
                 )
+                .select_from(DocumentText)
                 .outerjoin(
                     DocumentKeyword,
                     and_(

@@ -13,6 +13,7 @@ from xberg_pipe.models import (
     Document,
     DocumentChunk,
     DocumentKeyword,
+    DocumentPath,
     DocumentSummary,
     DocumentText,
     Keyword,
@@ -54,6 +55,58 @@ def test_scan_saves_postprocessing_with_extraction(tmp_path: Path, monkeypatch) 
         assert session.scalar(select(DocumentKeyword)).keyword == "結論"
         assert session.scalar(select(DocumentSummary)).summary == "重要な結論です。"
         assert asyncio.run(extractor.scan()).skipped == 1
+
+
+def test_scan_commits_once_per_extraction_batch(tmp_path: Path, monkeypatch) -> None:
+    for index in range(5):
+        (tmp_path / f"document-{index}.txt").write_text(str(index), encoding="utf-8")
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    batch_sizes = []
+    commits = []
+
+    async def fake_extract_batch(inputs, _config):
+        batch_sizes.append(len(inputs))
+        return SimpleNamespace(
+            results=[SimpleNamespace(content=item.uri) for item in inputs], errors=[]
+        )
+
+    monkeypatch.setattr("xberg_pipe.scan_extractor.extract_batch", fake_extract_batch)
+    event.listen(engine, "commit", lambda _connection: commits.append(1))
+    with Session(engine) as session:
+        result = asyncio.run(ScanExtractor(session, tmp_path, batch_size=2).scan())
+        assert result.extracted == 5
+        assert sorted(batch_sizes) == [1, 2, 2]
+        assert len(commits) == 4  # 抽出バッチ3回と削除済みパスの確認後に1回
+        assert session.scalar(select(func.count()).select_from(DocumentText)) == 5
+
+
+def test_save_failure_keeps_other_files_in_batch(tmp_path: Path, monkeypatch) -> None:
+    for name in ("first.txt", "broken.txt", "last.txt"):
+        (tmp_path / name).write_text(name, encoding="utf-8")
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    async def fake_extract_batch(inputs, _config):
+        return SimpleNamespace(
+            results=[SimpleNamespace(content=item.uri) for item in inputs], errors=[]
+        )
+
+    monkeypatch.setattr("xberg_pipe.scan_extractor.extract_batch", fake_extract_batch)
+    with Session(engine) as session:
+        extractor = ScanExtractor(session, tmp_path, batch_size=3)
+        original_save = extractor._save
+
+        def save_with_failure(path, content):
+            document_text = original_save(path, content)
+            if path.name == "broken.txt":
+                raise ValueError("保存失敗")
+            return document_text
+
+        monkeypatch.setattr(extractor, "_save", save_with_failure)
+        result = asyncio.run(extractor.scan())
+        assert (result.extracted, result.failed) == (2, 1)
+        assert session.scalar(select(func.count()).select_from(DocumentText)) == 2
 
 
 def test_save_persists_original_and_cleaned_text(tmp_path: Path) -> None:
@@ -256,6 +309,37 @@ def test_scan_removes_deleted_file_and_orphaned_document(tmp_path: Path) -> None
 
         assert session.scalar(select(func.count()).select_from(Document)) == 0
         assert session.scalar(select(func.count()).select_from(DocumentText)) == 0
+
+
+def test_scan_cleanup_stays_within_root(tmp_path: Path) -> None:
+    root = tmp_path / "docs"
+    sibling = tmp_path / "docs-other"
+    root.mkdir()
+    sibling.mkdir()
+    removed = root / "removed.txt"
+    also_removed = root / "also-removed.txt"
+    retained = sibling / "retained.txt"
+    removed.write_text("共有文書", encoding="utf-8")
+    also_removed.write_text("単独文書", encoding="utf-8")
+    retained.write_text("共有文書", encoding="utf-8")
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        extractor = ScanExtractor(session, root)
+        extractor._save(removed, "共有文書")
+        extractor._save(also_removed, "単独文書")
+        extractor._save(retained, "共有文書")
+        session.commit()
+        removed.unlink()
+        also_removed.unlink()
+
+        asyncio.run(extractor.scan())
+
+        assert session.scalars(select(DocumentPath.path)).all() == [
+            str(retained.resolve())
+        ]
+        assert session.scalar(select(func.count()).select_from(Document)) == 1
 
 
 def test_file_changed_during_extraction_is_retried_without_shifting_results(

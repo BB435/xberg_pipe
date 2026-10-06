@@ -1,5 +1,6 @@
 import datetime as dt
 import hashlib
+import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 from sqlalchemy import exists, func, select, true
+from sqlalchemy.orm import selectinload
 from xberg import ExtractInput, ExtractionConfig, OcrConfig, extract_batch
 
 from xberg_pipe.chunking import clean_extracted_text
@@ -71,10 +73,9 @@ def iter_files(root: Path, batch_size: int = BATCH_SIZE) -> Iterator[list[Path]]
     """ディレクトリを再帰探索し、一定件数ごとにファイル一覧を返す."""
     batch: list[Path] = []
     for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            continue
+        if not path.is_file():
             continue
 
         batch.append(path)
@@ -124,7 +125,9 @@ class ScanExtractor:
             and document_path.file_size == stat.st_size
         )
 
-    def _unchanged_paths(self, paths: list[Path]) -> set[str]:
+    def _unchanged_paths(
+        self, paths: list[Path], resolved_paths: dict[Path, str] | None = None
+    ) -> set[str]:
         """一つのバッチの更新判定に必要なメタデータをまとめて読む."""
 
         processed_clause = true()
@@ -135,7 +138,12 @@ class ScanExtractor:
                 DocumentSummary.model_name == model_name,
                 DocumentSummary.prompt_version == prompt_version,
             )
-        resolved = {str(path.resolve()): path for path in paths}
+        resolved = {
+            resolved_paths[path]
+            if resolved_paths is not None
+            else str(path.resolve()): path
+            for path in paths
+        }
         rows = self.session.execute(
             select(
                 DocumentPath.path,
@@ -173,7 +181,7 @@ class ScanExtractor:
             resolved = {path: str(path.resolve()) for path in paths}
             seen_paths.update(resolved.values())
             result.discovered += len(paths)
-            unchanged = self._unchanged_paths(paths)
+            unchanged = self._unchanged_paths(paths, resolved)
             changed_paths = [path for path in paths if resolved[path] not in unchanged]
             result.skipped += len(paths) - len(changed_paths)
             if not changed_paths:
@@ -188,7 +196,7 @@ class ScanExtractor:
             try:
                 extraction = await extract_batch(
                     [
-                        ExtractInput(kind="uri", uri=str(path.resolve()))
+                        ExtractInput(kind="uri", uri=resolved[path])
                         for path in changed_paths
                     ],
                     self.extraction_config,
@@ -199,7 +207,8 @@ class ScanExtractor:
                 )
                 for path in changed_paths:
                     result.failed += 1
-                    self._mark_failed(path)
+                    self._mark_failed(path, commit=False)
+                self.session.commit()
                 if self.progress is not None:
                     self.progress(result)
                 continue
@@ -211,7 +220,7 @@ class ScanExtractor:
                 if error is not None:
                     result.failed += 1
                     logger.error(f"Extraction failed for {path}: {error.message}")
-                    self._mark_failed(path)
+                    self._mark_failed(path, commit=False)
                     continue
 
                 try:
@@ -221,19 +230,19 @@ class ScanExtractor:
                         result.failed += 1
                         logger.warning(f"File changed during extraction: {path}")
                         continue
-                    document_text = self._save(path, extracted.content)
-                    if self.postprocess is not None:
-                        self.postprocess(self.session, document_text)
-                    self.session.commit()
+                    with self.session.begin_nested():
+                        document_text = self._save(path, extracted.content)
+                        if self.postprocess is not None:
+                            self.postprocess(self.session, document_text)
                     result.extracted += 1
                 except StopIteration:
                     result.failed += 1
                     logger.error(f"Extractor returned no result for {path}")
-                    self._mark_failed(path)
+                    self._mark_failed(path, commit=False)
                 except Exception:
-                    self.session.rollback()
                     result.failed += 1
                     logger.exception(f"Could not save extraction result for {path}")
+            self.session.commit()
             if self.progress is not None:
                 self.progress(result)
 
@@ -260,23 +269,25 @@ class ScanExtractor:
         self._delete_document_if_orphaned(previous_document, except_document=document)
         return document_text
 
-    def _mark_failed(self, path: Path) -> None:
+    def _mark_failed(self, path: Path, *, commit: bool = True) -> None:
         """抽出失敗を保存する."""
 
         try:
-            document = get_or_create_document(
-                self.session, sha256_of(path), path.suffix.lower()
-            )
-            if get_document_text(document, EXTRACTOR_NAME) is None:
-                document.status = STATUS_FAILED
-            previous_document = self._save_path(document, path)
-            self._delete_document_if_orphaned(
-                previous_document, except_document=document
-            )
-            self.session.commit()
+            with self.session.begin_nested():
+                document = get_or_create_document(
+                    self.session, sha256_of(path), path.suffix.lower()
+                )
+                if get_document_text(document, EXTRACTOR_NAME) is None:
+                    document.status = STATUS_FAILED
+                previous_document = self._save_path(document, path)
+                self._delete_document_if_orphaned(
+                    previous_document, except_document=document
+                )
+            if commit:
+                self.session.commit()
         except Exception:
-            # DBエラー後のSessionでは後続処理できないため、ここだけは復旧する。
-            self.session.rollback()
+            if commit:
+                self.session.rollback()
             logger.exception(f"Could not save extraction failure for {path}")
 
     def _save_path(self, document: Document, path: Path) -> Document | None:
@@ -296,7 +307,15 @@ class ScanExtractor:
         """走査ルートから消えたパスと、参照されない文書を削除する."""
 
         root = self.root.resolve()
-        stored_paths = self.session.scalars(select(DocumentPath)).all()
+        prefix = str(root)
+        if not prefix.endswith(os.sep):
+            prefix += os.sep
+        stored_paths = self.session.scalars(
+            select(DocumentPath).where(
+                DocumentPath.path.startswith(prefix, autoescape=True)
+            )
+        )
+        missing_paths = []
         for document_path in stored_paths:
             stored_path = Path(document_path.path)
             try:
@@ -305,10 +324,30 @@ class ScanExtractor:
                 under_root = False
             if not under_root or document_path.path in seen_paths:
                 continue
-            previous_document = document_path.document
+            missing_paths.append(document_path)
+
+        if not missing_paths:
+            return
+        document_ids = {path.document_id for path in missing_paths}
+        for document_path in missing_paths:
             self.session.delete(document_path)
-            self.session.flush()
-            self._delete_document_if_orphaned(previous_document)
+        self.session.flush()
+        retained_ids = set(
+            self.session.scalars(
+                select(DocumentPath.document_id).where(
+                    DocumentPath.document_id.in_(document_ids)
+                )
+            )
+        )
+        orphan_ids = document_ids - retained_ids
+        for document in self.session.scalars(
+            select(Document)
+            .where(Document.id.in_(orphan_ids))
+            .options(selectinload(Document.texts))
+        ):
+            for document_text in document.texts:
+                delete_document_derivatives(self.session, document_text)
+            self.session.delete(document)
 
     def _delete_document_if_orphaned(
         self, document: Document | None, except_document: Document | None = None
