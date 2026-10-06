@@ -107,13 +107,27 @@ class DocumentChunk(Base):
     )
 
 
+class Keyword(Base):
+    """文書間で共有するキーワード."""
+
+    __tablename__ = "keywords"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    value: Mapped[str] = mapped_column(Text, unique=True)
+
+    documents: Mapped[list[DocumentKeyword]] = relationship(back_populates="term")
+
+
 class DocumentKeyword(Base):
-    """抽出テキスト全体に対するKeyBERTキーワード."""
+    """抽出テキストと共有キーワードの紐づけ."""
 
     __tablename__ = "document_keywords"
     __table_args__ = (
         UniqueConstraint(
             "document_text_id", "model_name", "rank", name="uq_text_model_rank"
+        ),
+        UniqueConstraint(
+            "document_text_id", "model_name", "keyword_id", name="uq_text_model_keyword"
         ),
         Index("idx_document_keywords_document_text", "document_text_id"),
     )
@@ -124,10 +138,15 @@ class DocumentKeyword(Base):
     )
     model_name: Mapped[str] = mapped_column(String(200))
     rank: Mapped[int]
-    keyword: Mapped[str] = mapped_column(Text)
+    keyword_id: Mapped[int] = mapped_column(ForeignKey("keywords.id"), index=True)
     score: Mapped[float] = mapped_column(Float)
 
     document_text: Mapped[DocumentText] = relationship(back_populates="keywords")
+    term: Mapped[Keyword] = relationship(back_populates="documents")
+
+    @property
+    def keyword(self) -> str:
+        return self.term.value
 
 
 class DocumentSummary(Base):

@@ -15,6 +15,7 @@ from xberg_pipe.models import (
     DocumentKeyword,
     DocumentSummary,
     DocumentText,
+    Keyword,
 )
 from xberg_pipe.provisional_summary import (
     replace_provisional_summary,
@@ -122,7 +123,9 @@ def test_changed_extracted_text_invalidates_chunks(tmp_path: Path) -> None:
         chunk = session.scalar(select(DocumentChunk))
         assert chunk is not None
         document_text.keywords.append(
-            DocumentKeyword(model_name="test", rank=1, keyword="旧", score=1.0)
+            DocumentKeyword(
+                model_name="test", rank=1, term=Keyword(value="旧"), score=1.0
+            )
         )
         document_text.summaries.append(
             DocumentSummary(

@@ -17,6 +17,7 @@ from xberg_pipe.models import (
     DocumentKeyword,
     DocumentPath,
     DocumentText,
+    Keyword,
 )
 from xberg_pipe.server import create_app
 from xberg_pipe.vector_store import (
@@ -61,7 +62,9 @@ def _database(tmp_path: Path) -> Path:
         session.add(text)
         replace_document_chunks(session, text)
         text.keywords.append(
-            DocumentKeyword(model_name=LIGHT_MODEL, rank=1, keyword="AI", score=0.9)
+            DocumentKeyword(
+                model_name=LIGHT_MODEL, rank=1, term=Keyword(value="AI"), score=0.9
+            )
         )
         session.commit()
     rebuild_embeddings(database, EmbeddingConfig(), FakeEncoder())
@@ -101,7 +104,10 @@ def test_keyword_search_prefers_refined_keywords(tmp_path: Path) -> None:
         text = session.query(DocumentText).one()
         text.keywords.append(
             DocumentKeyword(
-                model_name=DEFAULT_MODEL, rank=1, keyword="精密AI", score=0.8
+                model_name=DEFAULT_MODEL,
+                rank=1,
+                term=Keyword(value="精密AI"),
+                score=0.8,
             )
         )
         session.commit()

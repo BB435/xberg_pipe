@@ -4,7 +4,8 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.selectable import Select
 
@@ -13,7 +14,7 @@ from xberg_pipe.chunking import (
     MAX_DOWNSTREAM_CHUNKS,
     chunk_text,
 )
-from xberg_pipe.models import DocumentKeyword, DocumentText
+from xberg_pipe.models import DocumentKeyword, DocumentText, Keyword
 
 DEFAULT_MODEL = "sirasagi62/ruri-v3-30m-ONNX"
 RURI_MODELS = (DEFAULT_MODEL,)
@@ -224,22 +225,31 @@ def replace_document_keywords(
     model_name: str,
 ) -> int:
     session.flush()
-    session.execute(
-        delete(DocumentKeyword).where(
+    existing = session.scalars(
+        select(DocumentKeyword).where(
             DocumentKeyword.document_text_id == document_text.id,
             DocumentKeyword.model_name == model_name,
         )
-    )
-    session.add_all(
-        DocumentKeyword(
-            document_text=document_text,
-            model_name=model_name,
-            rank=rank,
-            keyword=keyword,
-            score=score,
+    ).all()
+    for link in existing:
+        session.delete(link)
+    session.flush()
+    for rank, (keyword, score) in enumerate(keywords, start=1):
+        session.execute(
+            insert(Keyword)
+            .values(value=keyword)
+            .on_conflict_do_nothing(index_elements=[Keyword.value])
         )
-        for rank, (keyword, score) in enumerate(keywords, start=1)
-    )
+        keyword_id = session.scalar(select(Keyword.id).where(Keyword.value == keyword))
+        session.add(
+            DocumentKeyword(
+                document_text=document_text,
+                model_name=model_name,
+                rank=rank,
+                keyword_id=keyword_id,
+                score=score,
+            )
+        )
     return len(keywords)
 
 

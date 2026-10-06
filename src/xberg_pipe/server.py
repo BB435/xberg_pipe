@@ -7,7 +7,7 @@ from sqlalchemy.orm import aliased, sessionmaker
 
 from xberg_pipe.db import create_db_engine, init_db
 from xberg_pipe.keywording import DEFAULT_MODEL, LIGHT_MODEL
-from xberg_pipe.models import DocumentKeyword, DocumentPath, DocumentText
+from xberg_pipe.models import DocumentKeyword, DocumentPath, DocumentText, Keyword
 from xberg_pipe.vector_store import EmbeddingConfig, Encoder, search_embeddings
 
 DEFAULT_PREVIEW_CHARS = 240
@@ -138,7 +138,7 @@ def create_app(
                     ).label("cleaned_text"),
                     path_column.label("path"),
                     func.max(DocumentKeyword.score).label("score"),
-                    func.group_concat(DocumentKeyword.keyword, ", ").label("keywords"),
+                    func.group_concat(Keyword.value, ", ").label("keywords"),
                 )
                 .outerjoin(
                     DocumentKeyword,
@@ -153,9 +153,10 @@ def create_app(
                         ),
                     ),
                 )
+                .outerjoin(Keyword, Keyword.id == DocumentKeyword.keyword_id)
                 .where(
                     or_(
-                        DocumentKeyword.keyword.contains(query, autoescape=True),
+                        Keyword.value.contains(query, autoescape=True),
                         func.coalesce(
                             DocumentText.cleaned_text, DocumentText.extracted_text
                         ).like(pattern, escape="\\"),

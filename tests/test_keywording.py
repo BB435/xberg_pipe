@@ -13,8 +13,9 @@ from xberg_pipe.keywording import (
     aggregate_chunk_keywords,
     extract_document_keywords,
     rebuild_all_keywords,
+    replace_document_keywords,
 )
-from xberg_pipe.models import Base, Document, DocumentKeyword, DocumentText
+from xberg_pipe.models import Base, Document, DocumentKeyword, DocumentText, Keyword
 
 
 class FakeExtractor:
@@ -157,3 +158,31 @@ def test_rebuild_all_keywords_saves_file_level_result(tmp_path: Path) -> None:
             ).documents
             == 1
         )
+
+
+def test_replace_keywords_reuses_shared_term() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        texts = [
+            DocumentText(
+                document=Document(id=str(index) * 64, extension=".txt"),
+                extractor="xberg",
+                extracted_text="人工知能",
+            )
+            for index in (1, 2)
+        ]
+        session.add_all(texts)
+        for text in texts:
+            replace_document_keywords(session, text, [("人工知能", 0.8)], "test")
+        session.commit()
+
+        links = session.scalars(select(DocumentKeyword)).all()
+        assert len(links) == 2
+        assert links[0].keyword_id == links[1].keyword_id
+        assert session.scalars(select(Keyword.value)).all() == ["人工知能"]
+
+        replace_document_keywords(session, texts[0], [("人工知能", 0.9)], "test")
+        session.commit()
+        assert session.scalars(select(Keyword.value)).all() == ["人工知能"]
+        assert len(session.scalars(select(DocumentKeyword)).all()) == 2
