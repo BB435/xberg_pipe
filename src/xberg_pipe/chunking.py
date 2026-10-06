@@ -12,7 +12,7 @@ from xberg_pipe.repository import delete_document_derivatives
 CHUNKER_VERSION = "ja-v2"
 DEFAULT_TARGET_CHARS = 1_200
 DEFAULT_OVERLAP_CHARS = 200
-MAX_PROCESSING_CHARS = 50_000
+MAX_PROCESSING_CHARS = 10_000
 MAX_DOWNSTREAM_CHUNKS = 50
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
