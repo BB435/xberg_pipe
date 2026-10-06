@@ -2,7 +2,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from xberg_pipe.chunking import replace_document_chunks
@@ -186,3 +186,32 @@ def test_replace_keywords_reuses_shared_term() -> None:
         session.commit()
         assert session.scalars(select(Keyword.value)).all() == ["人工知能"]
         assert len(session.scalars(select(DocumentKeyword)).all()) == 2
+
+
+def test_replace_keywords_batches_shared_term_queries() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    statements = []
+
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    with Session(engine) as session:
+        text = DocumentText(
+            document=Document(id="c" * 64, extension=".txt"),
+            extractor="xberg",
+            extracted_text="人工知能と機械学習",
+        )
+        session.add(text)
+        replace_document_keywords(
+            session,
+            text,
+            [("人工知能", 0.9), ("機械学習", 0.8), ("自然言語", 0.7)],
+            "test",
+        )
+        session.flush()
+
+        assert sum(sql.startswith("INSERT INTO keywords") for sql in statements) == 1
+        assert sum(sql.startswith("SELECT keywords.value") for sql in statements) == 1
+        assert len(session.scalars(select(DocumentKeyword)).all()) == 3

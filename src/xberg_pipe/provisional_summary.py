@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Sequence
+from functools import lru_cache
 from types import SimpleNamespace
 
 from ja_stopword_filter import JaStopwordFilter
@@ -59,6 +60,13 @@ class SudachiTokenizer(Tokenizer):
         return tuple(word for word in words if self._stopwords.remove([word]))
 
 
+@lru_cache(maxsize=1)
+def _summary_tokenizer() -> SudachiTokenizer:
+    """文書ごとの辞書初期化を避ける."""
+
+    return SudachiTokenizer()
+
+
 def summarize_extractively(
     text: str, keywords: Sequence[tuple[str, float]], max_chars: int = 400
 ) -> str:
@@ -69,7 +77,7 @@ def summarize_extractively(
     ]
     if not cleaned or max_chars <= 0:
         return ""
-    parser = PlaintextParser.from_string(cleaned, SudachiTokenizer())
+    parser = PlaintextParser.from_string(cleaned, _summary_tokenizer())
     sentences = [
         str(sentence).strip()
         for sentence in parser.document.sentences[:MAX_SUMMARY_SENTENCES]

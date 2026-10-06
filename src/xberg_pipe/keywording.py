@@ -234,22 +234,32 @@ def replace_document_keywords(
     for link in existing:
         session.delete(link)
     session.flush()
-    for rank, (keyword, score) in enumerate(keywords, start=1):
-        session.execute(
-            insert(Keyword)
-            .values(value=keyword)
-            .on_conflict_do_nothing(index_elements=[Keyword.value])
+    values = list(dict.fromkeys(keyword for keyword, _ in keywords))
+    if not values:
+        return 0
+    session.execute(
+        insert(Keyword)
+        .values([{"value": value} for value in values])
+        .on_conflict_do_nothing(index_elements=[Keyword.value])
+    )
+    keyword_ids = {
+        value: keyword_id
+        for value, keyword_id in session.execute(
+            select(Keyword.value, Keyword.id).where(Keyword.value.in_(values))
         )
-        keyword_id = session.scalar(select(Keyword.id).where(Keyword.value == keyword))
-        session.add(
+    }
+    session.add_all(
+        (
             DocumentKeyword(
                 document_text=document_text,
                 model_name=model_name,
                 rank=rank,
-                keyword_id=keyword_id,
+                keyword_id=keyword_ids[keyword],
                 score=score,
             )
+            for rank, (keyword, score) in enumerate(keywords, start=1)
         )
+    )
     return len(keywords)
 
 
