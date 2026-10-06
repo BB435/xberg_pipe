@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import aliased, sessionmaker
 
 from xberg_pipe.db import create_db_engine, init_db
@@ -130,6 +130,15 @@ def create_app(
             .exists()
         )
         with session_factory() as session:
+            matched_score = func.max(
+                case(
+                    (
+                        Keyword.value.contains(query, autoescape=True),
+                        DocumentKeyword.score,
+                    ),
+                    else_=None,
+                )
+            )
             rows = session.execute(
                 select(
                     DocumentText.document_id,
@@ -137,7 +146,7 @@ def create_app(
                         DocumentText.cleaned_text, DocumentText.extracted_text
                     ).label("cleaned_text"),
                     path_column.label("path"),
-                    func.max(DocumentKeyword.score).label("score"),
+                    matched_score.label("score"),
                     func.group_concat(Keyword.value, ", ").label("keywords"),
                 )
                 .select_from(DocumentText)
@@ -164,7 +173,7 @@ def create_app(
                     ),
                 )
                 .group_by(DocumentText.id)
-                .order_by(func.max(DocumentKeyword.score).desc())
+                .order_by(matched_score.desc())
                 .limit(top_k)
             ).all()
         return {

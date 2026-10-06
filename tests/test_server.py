@@ -143,6 +143,55 @@ def test_keyword_search_treats_wildcards_literally(tmp_path: Path) -> None:
     assert client.get("/api/search/keyword", params={"q": "   "}).status_code == 422
 
 
+def test_keyword_search_ranks_matching_keyword_above_unrelated_score(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    engine = create_engine(f"sqlite:///{database.as_posix()}")
+    with Session(engine) as session:
+        first = session.query(DocumentText).one()
+        first.keywords.append(
+            DocumentKeyword(
+                model_name=LIGHT_MODEL,
+                rank=2,
+                term=Keyword(value="人工知能"),
+                score=0.2,
+            )
+        )
+        other = Document(id="b" * 64, extension=".txt", status="extracted")
+        other.paths.append(
+            DocumentPath(
+                path="docs/other.txt", file_size=4, modified_at=dt.datetime(2026, 1, 1)
+            )
+        )
+        second = DocumentText(
+            document=other,
+            extractor="xberg",
+            extracted_text="人工知能について",
+            cleaned_text="人工知能について",
+        )
+        second.keywords.append(
+            DocumentKeyword(
+                model_name=LIGHT_MODEL,
+                rank=1,
+                term=Keyword(value="無関係"),
+                score=0.99,
+            )
+        )
+        session.add(second)
+        session.commit()
+
+    response = TestClient(create_app(database, encoder=FakeEncoder())).get(
+        "/api/search/keyword", params={"q": "人工知能"}
+    )
+
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert [result["document_id"] for result in results] == ["a" * 64, "b" * 64]
+    assert results[0]["score"] == 0.2
+    assert results[1]["score"] is None
+
+
 def test_search_page_is_available(tmp_path: Path) -> None:
     response = TestClient(create_app(_database(tmp_path), encoder=FakeEncoder())).get(
         "/"

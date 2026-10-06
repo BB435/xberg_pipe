@@ -58,6 +58,7 @@ class DocumentText(Base):
     """抽出された原文"""
     cleaned_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     """後工程で使用するクリーニング済み本文"""
+    light_keyword_count: Mapped[int | None] = mapped_column(nullable=True)
 
     @property
     def processing_text(self) -> str:

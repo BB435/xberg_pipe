@@ -12,7 +12,15 @@ from sqlalchemy.orm import selectinload
 from xberg import ExtractInput, ExtractionConfig, OcrConfig, extract_batch
 
 from xberg_pipe.chunking import clean_extracted_text
-from xberg_pipe.models import Document, DocumentPath, DocumentSummary, DocumentText
+from xberg_pipe.keywording import LIGHT_MODEL
+from xberg_pipe.models import (
+    Document,
+    DocumentChunk,
+    DocumentKeyword,
+    DocumentPath,
+    DocumentSummary,
+    DocumentText,
+)
 from xberg_pipe.repository import (
     delete_document_derivatives,
     get_document_path,
@@ -123,6 +131,7 @@ class ScanExtractor:
             and get_document_text(document_path.document, EXTRACTOR_NAME) is not None
             and document_path.modified_at == modified_at
             and document_path.file_size == stat.st_size
+            and document_path.document_id == sha256_of(path)
         )
 
     def _unchanged_paths(
@@ -138,6 +147,33 @@ class ScanExtractor:
                 DocumentSummary.model_name == model_name,
                 DocumentSummary.prompt_version == prompt_version,
             )
+            has_chunks = exists().where(
+                DocumentChunk.document_text_id == DocumentText.id
+            )
+            keyword_count = (
+                select(func.count(DocumentKeyword.id))
+                .where(
+                    DocumentKeyword.document_text_id == DocumentText.id,
+                    DocumentKeyword.model_name == LIGHT_MODEL,
+                )
+                .scalar_subquery()
+            )
+            processed_clause = (
+                processed_clause
+                & (
+                    has_chunks
+                    | (
+                        func.trim(
+                            func.coalesce(
+                                DocumentText.cleaned_text, DocumentText.extracted_text
+                            )
+                        )
+                        == ""
+                    )
+                )
+                & DocumentText.light_keyword_count.is_not(None)
+                & (DocumentText.light_keyword_count == keyword_count)
+            )
         resolved = {
             resolved_paths[path]
             if resolved_paths is not None
@@ -150,6 +186,7 @@ class ScanExtractor:
                 DocumentPath.modified_at,
                 DocumentPath.file_size,
                 Document.status,
+                Document.id,
                 DocumentText.id,
                 processed_clause,
             )
@@ -163,13 +200,14 @@ class ScanExtractor:
         )
         return {
             stored_path
-            for stored_path, modified_at, file_size, status, text_id, processed in rows
+            for stored_path, modified_at, file_size, status, document_id, text_id, processed in rows
             if status == STATUS_EXTRACTED
             and text_id is not None
             and processed
             and (stat := resolved[stored_path].stat()).st_size == file_size
             and dt.datetime.fromtimestamp(stat.st_mtime, dt.UTC).replace(tzinfo=None)
             == modified_at
+            and sha256_of(resolved[stored_path]) == document_id
         }
 
     async def scan(self) -> ScanResult:
@@ -264,6 +302,7 @@ class ScanExtractor:
             self.session.add(document_text)
         elif document_text.extracted_text != text:
             delete_document_derivatives(self.session, document_text)
+            document_text.light_keyword_count = None
         document_text.extracted_text = text
         document_text.cleaned_text = clean_extracted_text(text)
         self._delete_document_if_orphaned(previous_document, except_document=document)

@@ -1,4 +1,5 @@
 import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -6,7 +7,7 @@ from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session
 
 from xberg_pipe.chunking import replace_document_chunks
-from xberg_pipe.keywording import replace_document_keywords
+from xberg_pipe.keywording import LIGHT_MODEL, replace_document_keywords
 from xberg_pipe.models import (
     Base,
     ChunkEmbedding,
@@ -19,6 +20,8 @@ from xberg_pipe.models import (
     Keyword,
 )
 from xberg_pipe.provisional_summary import (
+    MODEL_NAME,
+    PROMPT_VERSION,
     replace_provisional_summary,
     summarize_extractively,
 )
@@ -379,3 +382,71 @@ def test_file_changed_during_extraction_is_retried_without_shifting_results(
             "new extracted",
             "second extracted",
         }
+
+
+def test_same_size_and_mtime_changed_content_is_reextracted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "document.txt"
+    source.write_text("old", encoding="utf-8")
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    calls = 0
+
+    async def fake_extract_batch(_inputs, _config):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
+            results=[SimpleNamespace(content=source.read_text())], errors=[]
+        )
+
+    monkeypatch.setattr("xberg_pipe.scan_extractor.extract_batch", fake_extract_batch)
+    with Session(engine) as session:
+        extractor = ScanExtractor(session, tmp_path)
+        assert asyncio.run(extractor.scan()).extracted == 1
+        stat = source.stat()
+        source.write_text("new", encoding="utf-8")
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        assert asyncio.run(extractor.scan()).extracted == 1
+        assert calls == 2
+        assert session.scalar(select(DocumentText.extracted_text)) == "new"
+
+
+def test_scan_repairs_missing_chunks_and_light_keywords(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "document.txt"
+    source.write_text("本文です。", encoding="utf-8")
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    async def fake_extract_batch(_inputs, _config):
+        return SimpleNamespace(
+            results=[SimpleNamespace(content="本文です。")], errors=[]
+        )
+
+    monkeypatch.setattr("xberg_pipe.scan_extractor.extract_batch", fake_extract_batch)
+
+    def postprocess(session, document_text):
+        replace_document_chunks(session, document_text)
+        replace_document_keywords(session, document_text, [("本文", 0.8)], LIGHT_MODEL)
+        document_text.light_keyword_count = 1
+        replace_provisional_summary(session, document_text, "本文です。")
+
+    with Session(engine) as session:
+        extractor = ScanExtractor(
+            session,
+            tmp_path,
+            postprocess=postprocess,
+            required_summary=(MODEL_NAME, PROMPT_VERSION),
+        )
+        assert asyncio.run(extractor.scan()).extracted == 1
+        assert asyncio.run(extractor.scan()).skipped == 1
+        session.query(DocumentChunk).delete()
+        session.commit()
+        assert asyncio.run(extractor.scan()).extracted == 1
+        assert session.scalar(select(func.count()).select_from(DocumentChunk)) == 1
+        session.query(DocumentKeyword).delete()
+        session.commit()
+        assert asyncio.run(extractor.scan()).extracted == 1
+        assert session.scalar(select(func.count()).select_from(DocumentKeyword)) == 1

@@ -37,6 +37,13 @@ def init_db(db_engine: Engine) -> None:
             connection.execute(
                 text("ALTER TABLE document_texts ADD COLUMN cleaned_text TEXT")
             )
+    if "light_keyword_count" not in columns:
+        with db_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE document_texts ADD COLUMN light_keyword_count INTEGER"
+                )
+            )
     from xberg_pipe.chunking import clean_extracted_text
     from xberg_pipe.repository import delete_document_derivatives
 

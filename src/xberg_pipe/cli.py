@@ -178,6 +178,7 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
         replace_document_keywords(
             session, document_text, keywords, keyword_config.model_name
         )
+        document_text.light_keyword_count = len(keywords)
         session.execute(
             delete(DocumentKeyword).where(
                 DocumentKeyword.document_text_id == document_text.id,
