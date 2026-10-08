@@ -38,15 +38,32 @@ uv run xberg-pipe refine-keywords
 
 既存のデータベースも次の`scan`で軽量なキーフレーズを生成します。
 
+## 検索
+
+検索処理は `xberg_pipe.search` にまとまっており、CLIとWeb APIから共通で使用します。
+キーワード検索は `scan` 直後から利用できます。ベクトル・複合検索は
+`uv run xberg-pipe embed` で埋め込みを生成してから使用します。
+
+```console
+uv run xberg-pipe search "人工知能"
+uv run xberg-pipe search "人工知能" --mode hybrid --path docs --extension pdf
+```
+
+`--mode` は `keyword`（既定）、`vector`、`hybrid` から選べます。
+`--path` はパス内の文字列、`--extension` は拡張子で絞り込みます。
+複合検索はキーワードとベクトルの順位を統合し、文書ごとに1件返します。
+
 ## 検索サーバー
 
 ```console
 uv sync --extra all --group dev
-uv run xberg-pipe --database data/app.db serve
+uv run xberg-pipe-server --database data/app.db
 ```
 
 起動後、`http://127.0.0.1:8000/` で検索画面を開けます。APIは
-`/api/search/vector?q=検索文` と `/api/search/keyword?q=検索語` です。
+`/api/search/vector?q=検索文`、`/api/search/keyword?q=検索語`、
+`/api/search/hybrid?q=検索文` です。いずれも `top_k`、`path`、`extension`
+を指定できます。
 
 ## Ollamaによる要約
 

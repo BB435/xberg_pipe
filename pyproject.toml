@@ -47,6 +47,7 @@ dev = [
 
 [project.scripts]
 xberg-pipe = "xberg_pipe:main"
+xberg-pipe-server = "xberg_pipe.server_cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.19,<0.13.0"]

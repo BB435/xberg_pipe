@@ -116,20 +116,18 @@ def build_parser() -> argparse.ArgumentParser:
     embed.add_argument("--batch-size", type=int, default=32)
     embed.add_argument("--all", action="store_true", help="生成済みベクトルも再実行")
 
-    search = subparsers.add_parser("search", help="sqlite-vecで意味検索します。")
+    search = subparsers.add_parser(
+        "search", help="文書をキーワード・意味・複合検索します。"
+    )
     search.add_argument("query", help="検索文")
+    search.add_argument(
+        "--mode", choices=("hybrid", "keyword", "vector"), default="keyword"
+    )
+    search.add_argument("--path", help="パスに含まれる文字列")
+    search.add_argument("--extension", help="拡張子 (例: pdf)")
     search.add_argument("--model", choices=RURI_MODELS, default=DEFAULT_MODEL)
     search.add_argument("--device", help="例: cpu, cuda, cuda:0")
     search.add_argument("--top-k", type=int, default=10)
-
-    serve = subparsers.add_parser(
-        "serve", help="ベクトル検索・キーワード検索サーバーを起動します。"
-    )
-    serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8000)
-    serve.add_argument("--model", choices=RURI_MODELS, default=DEFAULT_MODEL)
-    serve.add_argument("--device", help="例: cpu, cuda, cuda:0")
-    serve.add_argument("--preview-chars", type=int, default=240)
 
     subparsers.add_parser("stats", help="SQLiteに保存された件数を表示します。")
     return parser
@@ -307,39 +305,23 @@ def _run_embed(args: argparse.Namespace) -> int:
 
 
 def _run_search(args: argparse.Namespace) -> int:
-    from xberg_pipe.vector_store import EmbeddingConfig, search_embeddings
+    from xberg_pipe.search import search
+    from xberg_pipe.vector_store import EmbeddingConfig
 
     config = EmbeddingConfig(model_name=args.model, device=args.device)
-    results = search_embeddings(
-        args.database, args.query, top_k=args.top_k, config=config
+    results = search(
+        args.database,
+        args.query,
+        mode=args.mode,
+        top_k=args.top_k,
+        path_filter=args.path,
+        extension=args.extension,
+        config=config,
     )
     for rank, item in enumerate(results, start=1):
-        preview = " ".join(item.content.split())[:160]
-        print(
-            f"{rank}. distance={item.distance:.4f} "
-            f"document={item.document_id} path={item.path or '-'}"
-        )
-        print(f"   {preview}")
-    return 0
-
-
-def _run_serve(args: argparse.Namespace) -> int:
-    try:
-        import uvicorn
-    except ImportError as error:
-        raise RuntimeError(
-            "サーバー依存がありません。uv sync --extra vis を実行してください。"
-        ) from error
-
-    from xberg_pipe.server import create_app
-
-    app = create_app(
-        args.database,
-        model_name=args.model,
-        device=args.device,
-        preview_chars=args.preview_chars,
-    )
-    uvicorn.run(app, host=args.host, port=args.port)
+        details = f" distance={item.distance:.4f}" if item.distance is not None else ""
+        print(f"{rank}. document={item.document_id} path={item.path or '-'}{details}")
+        print(f"   {item.preview[:160]}")
     return 0
 
 
@@ -368,8 +350,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return _run_embed(args)
             if args.command == "search":
                 return _run_search(args)
-            if args.command == "serve":
-                return _run_serve(args)
             if args.command == "stats":
                 return _run_stats(session)
     except (OSError, RuntimeError, ValueError) as error:
