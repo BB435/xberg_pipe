@@ -90,12 +90,12 @@ def test_scan_commits_once_per_extraction_batch(tmp_path: Path, monkeypatch) -> 
     event.listen(engine, "commit", lambda _connection: commits.append(1))
     with Session(engine) as session:
         result = asyncio.run(
-            ScanExtractor(session, tmp_path, batch_size=5, workers=2).scan()
+            ScanExtractor(session, tmp_path, batch_size=1, workers=2).scan()
         )
         assert result.extracted == 5
         assert batch_sizes == [1] * 5
         assert max_active == 2
-        assert len(commits) == 2  # 抽出結果の一括保存と走査後の確認
+        assert len(commits) == 4  # 3つの走査ウィンドウと走査後の確認
         assert session.scalar(select(func.count()).select_from(DocumentText)) == 5
 
 

@@ -227,7 +227,8 @@ class ScanExtractor:
 
         result = ScanResult()
         seen_paths: set[str] = set()
-        for paths in iter_files(self.root, self.batch_size):
+        scan_window = self.batch_size * self.workers
+        for paths in iter_files(self.root, scan_window):
             resolved = {path: str(path.resolve()) for path in paths}
             seen_paths.update(resolved.values())
             result.discovered += len(paths)
@@ -332,37 +333,55 @@ class ScanExtractor:
     ) -> dict[Path, tuple[str, str | None, str | None]]:
         """ファイルを並列抽出し、結果をパス別に返す。DBには触れない."""
 
-        semaphore = asyncio.Semaphore(self.workers)
         source_stats = {
             path: (path.stat().st_size, path.stat().st_mtime_ns) for path in paths
         }
         results: dict[Path, tuple[str, str | None, str | None]] = {}
 
-        async def extract_one(path: Path) -> None:
-            async with semaphore:
-                try:
-                    extraction = await extract_batch(
-                        [ExtractInput(kind="uri", uri=resolved[path])],
-                        self.extraction_config,
-                    )
-                    error = next(iter(extraction.errors), None)
-                    if error is not None:
-                        results[path] = ("failed", None, error.message)
-                        return
-                    extracted = next(iter(extraction.results), None)
-                    if extracted is None:
-                        results[path] = ("failed", None, "抽出結果がありません")
-                        return
-                    stat = path.stat()
-                    if (stat.st_size, stat.st_mtime_ns) != source_stats[path]:
-                        results[path] = ("changed", None, None)
-                        return
-                    results[path] = ("ok", extracted.content, None)
-                except Exception as error:
+        async def extract_batch_paths(batch: list[Path]) -> None:
+            try:
+                extraction = await extract_batch(
+                    [ExtractInput(kind="uri", uri=resolved[path]) for path in batch],
+                    self.extraction_config,
+                )
+            except Exception as error:
+                logger.exception(f"Batch extraction failed ({len(batch)} files)")
+                for path in batch:
                     results[path] = ("failed", None, str(error))
-                    logger.exception(f"Batch extraction failed for {path}")
+                return
 
-        await asyncio.gather(*(extract_one(path) for path in paths))
+            errors = {error.index: error for error in extraction.errors}
+            documents = iter(extraction.results)
+            for index, path in enumerate(batch):
+                if index in errors:
+                    results[path] = ("failed", None, errors[index].message)
+                    continue
+                try:
+                    extracted = next(documents)
+                except StopIteration:
+                    results[path] = ("failed", None, "抽出結果がありません")
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    results[path] = ("changed", None, None)
+                    continue
+                if (stat.st_size, stat.st_mtime_ns) != source_stats[path]:
+                    results[path] = ("changed", None, None)
+                else:
+                    results[path] = ("ok", extracted.content, None)
+
+        batches = [
+            paths[index : index + self.batch_size]
+            for index in range(0, len(paths), self.batch_size)
+        ]
+        semaphore = asyncio.Semaphore(self.workers)
+
+        async def bounded_extract(batch: list[Path]) -> None:
+            async with semaphore:
+                await extract_batch_paths(batch)
+
+        await asyncio.gather(*(bounded_extract(batch) for batch in batches))
         return results
 
     def _save(self, path: Path, text: str) -> DocumentText:
