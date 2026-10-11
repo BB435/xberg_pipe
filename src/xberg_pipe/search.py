@@ -85,10 +85,11 @@ def keyword_search(
     if operator not in {"and", "or"}:
         raise ValueError("operatorはandまたはorを指定してください")
     positive, negative = _terms(query)
+    first_path = aliased(DocumentPath)
     path_column = (
-        select(DocumentPath.path)
-        .where(DocumentPath.document_id == DocumentText.document_id)
-        .order_by(DocumentPath.id)
+        select(first_path.path)
+        .where(first_path.document_id == DocumentText.document_id)
+        .order_by(first_path.id)
         .limit(1)
         .scalar_subquery()
     )
@@ -120,17 +121,12 @@ def keyword_search(
         )
         return or_(body.like(_pattern(term), escape="\\"), keyword_match)
 
+    positive_keyword_match = or_(
+        *(Keyword.value.contains(term, autoescape=True) for term in positive)
+    )
     matching_score = func.max(
         case(
-            (
-                or_(
-                    *(
-                        Keyword.value.contains(term, autoescape=True)
-                        for term in positive
-                    )
-                ),
-                DocumentKeyword.score,
-            )
+            (positive_keyword_match, DocumentKeyword.score),
         )
     )
     statement = (

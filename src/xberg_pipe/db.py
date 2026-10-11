@@ -30,6 +30,20 @@ def create_db_engine(db_path: str | Path = DB_PATH) -> Engine:
 
 def init_db(db_engine: Engine) -> None:
     Base.metadata.create_all(db_engine)
+    initial_inspector = inspect(db_engine)
+    initial_columns = {
+        table: {column["name"] for column in initial_inspector.get_columns(table)}
+        for table in ("document_texts", "document_chunks", "document_summaries")
+    }
+    initial_text_columns = initial_columns["document_texts"]
+    missing_migration_columns = {
+        table: {name for name in additions if name not in initial_columns[table]}
+        for table, additions in {
+            "document_texts": {"content_hash": "VARCHAR(64)"},
+            "document_chunks": {"content_hash": "VARCHAR(64)"},
+            "document_summaries": {"work_key": "VARCHAR(64)"},
+        }.items()
+    }
     migrations = {
         "document_texts": {"content_hash": "VARCHAR(64)"},
         "document_chunks": {"content_hash": "VARCHAR(64)"},
@@ -59,25 +73,41 @@ def init_db(db_engine: Engine) -> None:
                     "ALTER TABLE document_texts ADD COLUMN light_keyword_count INTEGER"
                 )
             )
+    needs_backfill = any(missing_migration_columns.values()) or any(
+        name not in initial_text_columns
+        for name in ("cleaned_text", "light_keyword_count")
+    )
+    if not needs_backfill:
+        return
+
     from xberg_pipe.chunking import clean_extracted_text
     from xberg_pipe.repository import delete_document_derivatives
 
     with Session(db_engine) as session:
         from xberg_pipe.models import DocumentChunk, DocumentSummary
 
-        for item in session.scalars(select(DocumentText)):
-            item.content_hash = hashlib.sha256(
-                item.extracted_text.encode("utf-8")
-            ).hexdigest()
-        for chunk in session.scalars(select(DocumentChunk)):
-            chunk.content_hash = hashlib.sha256(
-                chunk.content.encode("utf-8")
-            ).hexdigest()
-        for summary in session.scalars(select(DocumentSummary)):
-            summary.work_key = hashlib.sha256(
-                f"{summary.document_text.document_id}:{summary.model_name}:"
-                f"{summary.prompt_version}".encode()
-            ).hexdigest()
+        if "content_hash" in missing_migration_columns["document_texts"]:
+            for item in session.scalars(
+                select(DocumentText).execution_options(yield_per=500)
+            ):
+                item.content_hash = hashlib.sha256(
+                    item.extracted_text.encode("utf-8")
+                ).hexdigest()
+        if "content_hash" in missing_migration_columns["document_chunks"]:
+            for chunk in session.scalars(
+                select(DocumentChunk).execution_options(yield_per=500)
+            ):
+                chunk.content_hash = hashlib.sha256(
+                    chunk.content.encode("utf-8")
+                ).hexdigest()
+        if "work_key" in missing_migration_columns["document_summaries"]:
+            for summary in session.scalars(
+                select(DocumentSummary).execution_options(yield_per=500)
+            ):
+                summary.work_key = hashlib.sha256(
+                    f"{summary.document_text.document_id}:{summary.model_name}:"
+                    f"{summary.prompt_version}".encode()
+                ).hexdigest()
         for document_text in session.scalars(
             select(DocumentText).where(DocumentText.cleaned_text.is_(None))
         ):

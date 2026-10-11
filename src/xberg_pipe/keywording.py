@@ -280,7 +280,8 @@ def rebuild_all_keywords(
     if workers <= 0:
         raise ValueError("workers must be positive")
     config: KeywordConfig = config or KeywordConfig()
-    extractor = extractor or RuriKeyBertExtractor(config)
+    if workers == 1:
+        extractor = extractor or RuriKeyBertExtractor(config)
     result = KeywordResult()
     statement: Select[DocumentText] = (
         select(DocumentText)
@@ -297,29 +298,63 @@ def rebuild_all_keywords(
             )
             .exists()
         )
-    document_texts = list(session.scalars(statement))
     if workers > 1:
 
-        def extract_one(item: DocumentText) -> list[tuple[str, float]]:
+        def extract_batch(items: list[tuple[int, str, list[str]]]):
             worker_extractor = RuriKeyBertExtractor(config)
-            return extract_document_keywords(item, worker_extractor, config)
 
+            def extract_one(item: tuple[int, str, list[str]]):
+                document_id, processing_text, chunks = item
+                if not processing_text.strip():
+                    return document_id, []
+                texts = chunks or chunk_text(processing_text)[:MAX_DOWNSTREAM_CHUNKS]
+                per_chunk_top_n = max(config.top_n * 3, config.top_n)
+                keywords = aggregate_chunk_keywords(
+                    (
+                        worker_extractor.extract(
+                            text[:DEFAULT_TARGET_CHARS], per_chunk_top_n
+                        )
+                        for text in texts[:MAX_DOWNSTREAM_CHUNKS]
+                    ),
+                    config.top_n,
+                )
+                return document_id, keywords
+
+            return [extract_one(item) for item in items]
+
+        ids = session.scalars(statement.with_only_columns(DocumentText.id)).all()
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            outputs = pool.map(extract_one, document_texts)
-            for document_text, keywords in zip(document_texts, outputs, strict=True):
-                if not document_text.processing_text.strip():
-                    result.skipped += 1
-                else:
-                    result.keywords += replace_document_keywords(
-                        session, document_text, keywords, config.model_name
+            for start in range(0, len(ids), batch_size):
+                batch_ids = ids[start : start + batch_size]
+                items = session.scalars(
+                    select(DocumentText)
+                    .options(selectinload(DocumentText.chunks))
+                    .where(DocumentText.id.in_(batch_ids))
+                    .order_by(DocumentText.id)
+                ).all()
+                inputs = [
+                    (
+                        item.id,
+                        item.processing_text,
+                        [c.content for c in item.chunks[:MAX_DOWNSTREAM_CHUNKS]],
                     )
-                    result.documents += 1
-                if progress is not None:
-                    progress(result)
-                if result.documents and result.documents % batch_size == 0:
-                    session.commit()
+                    for item in items
+                ]
+                outputs = pool.submit(extract_batch, inputs).result()
+                for item, (_document_id, keywords) in zip(items, outputs, strict=True):
+                    if not item.processing_text.strip():
+                        result.skipped += 1
+                    else:
+                        result.keywords += replace_document_keywords(
+                            session, item, keywords, config.model_name
+                        )
+                        result.documents += 1
+                    if progress is not None:
+                        progress(result)
+                session.commit()
         session.commit()
         return result
+    document_texts = session.scalars(statement).yield_per(batch_size)
     for document_text in document_texts:
         if not document_text.processing_text.strip():
             result.skipped += 1

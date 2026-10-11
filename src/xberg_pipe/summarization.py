@@ -238,12 +238,7 @@ def rebuild_all_summaries(
             )
             .exists()
         )
-    items = session.scalars(
-        select(DocumentText)
-        .options(selectinload(DocumentText.chunks))
-        .where(DocumentText.id.in_(session.scalars(statement).all()))
-        .order_by(DocumentText.id)
-    ).all()
+    document_ids = session.scalars(statement).all()
 
     def process(
         item: tuple[int, str, list[str]],
@@ -256,15 +251,6 @@ def rebuild_all_summaries(
             return document_text_id, summary, None
         except (RuntimeError, ValueError, OSError) as error:
             return document_text_id, None, error
-
-    work_items = [
-        (
-            item.id,
-            item.processing_text,
-            [chunk.content for chunk in item.chunks[:MAX_DOWNSTREAM_CHUNKS]],
-        )
-        for item in items
-    ]
 
     def save_processed(item: tuple[int, str | None, Exception | None]) -> None:
         document_text_id, summary, error = item
@@ -286,11 +272,27 @@ def rebuild_all_summaries(
         if progress is not None:
             progress(result)
 
-    if workers == 1:
-        for work_item in work_items:
-            save_processed(process(work_item))
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            for completed in pool.map(process, work_items):
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for start in range(0, len(document_ids), 20):
+            batch_ids = document_ids[start : start + 20]
+            items = session.scalars(
+                select(DocumentText)
+                .options(selectinload(DocumentText.chunks))
+                .where(DocumentText.id.in_(batch_ids))
+                .order_by(DocumentText.id)
+            ).all()
+            work_items = [
+                (
+                    item.id,
+                    item.processing_text,
+                    [chunk.content for chunk in item.chunks[:MAX_DOWNSTREAM_CHUNKS]],
+                )
+                for item in items
+            ]
+            if workers == 1:
+                completed_items = map(process, work_items)
+            else:
+                completed_items = pool.map(process, work_items)
+            for completed in completed_items:
                 save_processed(completed)
     return result
