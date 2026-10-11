@@ -1,63 +1,69 @@
 # Repository Guidelines
 
-## Structure and Pipeline
+## 作業方針
 
-Source code lives in `src/xberg_pipe/`; tests live in `tests/`. `cli.py` defines
-the commands, `scan_extractor.py` handles file discovery and extraction,
-`models.py` defines the SQLite schema, and `db.py` and `repository.py` manage
-database setup and shared persistence. `chunking.py` creates Japanese-aware
-chunks, `keywording.py` provides lightweight YAKE and optional KeyBERT
-keywords, `provisional_summary.py` creates extractive summaries,
-`summarization.py` creates Ollama summaries, `vector_store.py` stores and
-searches sqlite-vec embeddings, and `server.py` serves the search UI and API.
+- 変更前に関連コード・テストと `git status` を確認し、既存の変更を保持する。
+- 依存関係とコマンドの定義は `pyproject.toml`、利用方法は `README.md` を参照する。
+- 変更は目的に必要な範囲に絞る。公開コマンド・API・依存関係を変更したら README も更新する。
+- 実行時のデータベース、ダウンロードしたモデル、ビルド成果物をコミットしない。
 
-`scan` extracts changed files and saves chunks, lightweight keywords, and
-provisional summaries in the same workflow. The expensive steps are separate:
-`refine-keywords`, `summarize`, and `embed`; then `search` or `serve` queries the
-results. Those three commands process only items missing the selected result by
-default; `--all` rebuilds them. Keep the basic scan usable without optional ML,
-LLM, vector, or server dependencies. When extracted text changes, invalidate
-its chunks, keywords, summaries, and embedding metadata and vectors together.
-Do not commit runtime databases, downloaded models, or generated distributions.
+## 構成と責務
 
-## Development Commands
+実装は `src/xberg_pipe/`、テストは `tests/` に置く。
 
-Python 3.14 and `uv` are required. Put `--database <path>` before the
-subcommand when using a database other than `data/app.db`.
+| 対象 | 主な責務 |
+| --- | --- |
+| `cli.py` | 取り込み・後処理・検索の CLI |
+| `scan_extractor.py` | ファイル検出・変更判定・テキスト抽出 |
+| `models.py`, `db.py`, `repository.py` | SQLite スキーマ・初期化と既存 DB の更新・共有永続化処理 |
+| `chunking.py` | 本文のクリーニング・日本語対応チャンク生成 |
+| `keywording.py`, `provisional_summary.py` | YAKE/KeyBERT キーフレーズ・抽出的な暫定要約 |
+| `summarization.py` | Ollama による要約 |
+| `fastembed_model.py`, `vector_store.py` | 埋め込みモデル設定・sqlite-vec 保存と検索 |
+| `search.py` | CLI と Web で共有する検索・絞り込み・順位統合 |
+| `server.py`, `server_cli.py` | 検索画面と API・専用サーバー起動コマンド |
 
-- `uv sync --group dev`: core and development dependencies.
-- `uv sync --extra all --group dev`: all optional features. Individual extras
-  are `keywords`, `vectors`, `llm`, and `vis`.
-- `uv run xberg-pipe scan <directory>`: extract and save lightweight results.
-- `uv run xberg-pipe refine-keywords`, `uv run xberg-pipe summarize`, and
-  `uv run xberg-pipe embed`: run optional downstream work. Add `--all` to
-  regenerate existing results.
-- `uv run xberg-pipe search <query>` and `uv run xberg-pipe serve`: query the
-  stored results. `init-db` and `stats` are available for database maintenance.
-- `uv run pytest -q`: run tests.
-- `uv run ruff check src tests` and `uv run ruff format --check src tests`:
-  check lint and formatting.
-- `uv build`: build distributions in `dist/`.
+## 保持する動作
 
-## Coding and Testing
+- `scan` は変更ファイルを抽出し、チャンク・軽量キーフレーズ・暫定要約を保存する。
+  ML・LLM・ベクトル・サーバーの任意依存なしで利用できる状態を保つ。
+- `refine-keywords`・`summarize`・`embed` は選択したモデル・版の未処理項目だけ処理し、
+  `--all` で生成済み項目も再生成する。
+- 本文やチャンク生成条件が変わる場合、チャンク・キーフレーズ・要約・埋め込みメタデータ・
+  実ベクトルを一緒に無効化する。共有処理 `repository.delete_document_derivatives` を使う。
+- 抽出原文を保持し、後処理には `DocumentText.processing_text` と既存の処理上限を使う。
+- 検索の共通処理は `search.py` に置く。キーフレーズは選択モデルの精緻化結果を優先し、
+  未生成なら軽量結果を使う。検索条件の変更では各検索モードへの適用範囲を明示する。
+- スキーマ変更は新規 DB と既存 DB の両方を考慮し、更新処理を `db.py` に用意する。
 
-Use four spaces, type annotations, `pathlib.Path`, and typed dataclasses.
-Use `snake_case` for functions and modules, `PascalCase` for classes, and
-`UPPER_CASE` for constants. Keep heavy optional imports lazy. Preserve the
-concise Japanese docstring and user-message style. Ruff settings are in
-`pyproject.toml`.
+## 開発と検証
 
-Name pytest files `tests/test_<module>.py` and tests `test_<behavior>`. Use
-`tmp_path`, in-memory SQLite where appropriate, and fake LLM and embedding
-implementations; never write tests to `data/app.db` or download production
-models. Use `pytest.importorskip` for optional extensions. Check stored rows,
-invalidation on changed text, incremental reruns, and `--all` behavior when
-changing downstream processing. Run sqlite-vec integration separately when
-needed: `uv run --with sqlite-vec pytest -q tests/test_vector_store.py`.
+Python 3.14 以上と `uv` を使用する。通常は `uv sync --group dev`、任意機能が必要な場合は
+`uv sync --extra <extra> --group dev` を使う。extra は `keywords`・`vectors`・`llm`・`vis`・`all`。
 
-## Commits and Pull Requests
+```console
+uv run xberg-pipe --database <path> scan <directory>
+uv run xberg-pipe --database <path> search <query>
+uv run xberg-pipe-server --database <path>
+uv run pytest -q
+uv run ruff check src tests
+uv run ruff format --check src tests
+```
 
-Use short, focused Conventional Commit subjects such as `feat: add search
-filter` or `fix: invalidate stale vectors`. Pull requests should describe
-pipeline effects, schema or dependency changes, verification commands, and
-any model download or migration requirements. Link relevant issues.
+- `xberg-pipe` の `--database` はサブコマンドの前に指定する。既定は `data/app.db`。
+- 4 スペース、型注釈、`pathlib.Path`、データ構造には型付き dataclass を使う。
+  命名は `snake_case` / `PascalCase` / `UPPER_CASE`。重い任意依存は必要時に import する。
+  docstring と利用者向けメッセージは簡潔な日本語にする。
+- テストは `tests/test_<module>.py` の `test_<behavior>` に置く。`tmp_path` または
+  インメモリ SQLite、偽の LLM・埋め込み実装を使い、実 DB の書き換えやモデル取得を避ける。
+  任意拡張が必要なテストには `pytest.importorskip` を使う。
+- 変更に関係するテストと Ruff を実行する。後処理変更では保存内容・本文変更時の無効化・
+  増分再実行・`--all` を、検索変更では複数語・除外語・パス境界・特殊文字を確認する。
+- ベクトル変更では `uv run --with sqlite-vec pytest -q tests/test_vector_store.py`、
+  サーバー変更では `tests/test_server.py` と `tests/test_server_cli.py` も検証する。
+  失敗・スキップ・未完了の検証は成功と区別して報告する。
+
+## コミットと PR
+
+コミット件名は短い Conventional Commits（例: `feat: add search filter`）。PR には動作への影響、
+スキーマ・依存変更、検証結果、必要なモデル取得・移行手順を記載し、関連 issue があればリンクする。

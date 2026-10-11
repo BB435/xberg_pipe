@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, inspect, select, text
@@ -29,6 +30,20 @@ def create_db_engine(db_path: str | Path = DB_PATH) -> Engine:
 
 def init_db(db_engine: Engine) -> None:
     Base.metadata.create_all(db_engine)
+    migrations = {
+        "document_texts": {"content_hash": "VARCHAR(64)"},
+        "document_chunks": {"content_hash": "VARCHAR(64)"},
+        "document_summaries": {"work_key": "VARCHAR(64)"},
+    }
+    with db_engine.begin() as connection:
+        inspector = inspect(db_engine)
+        for table, additions in migrations.items():
+            columns = {column["name"] for column in inspector.get_columns(table)}
+            for name, definition in additions.items():
+                if name not in columns:
+                    connection.execute(
+                        text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+                    )
     columns = {
         column["name"] for column in inspect(db_engine).get_columns("document_texts")
     }
@@ -48,6 +63,21 @@ def init_db(db_engine: Engine) -> None:
     from xberg_pipe.repository import delete_document_derivatives
 
     with Session(db_engine) as session:
+        from xberg_pipe.models import DocumentChunk, DocumentSummary
+
+        for item in session.scalars(select(DocumentText)):
+            item.content_hash = hashlib.sha256(
+                item.extracted_text.encode("utf-8")
+            ).hexdigest()
+        for chunk in session.scalars(select(DocumentChunk)):
+            chunk.content_hash = hashlib.sha256(
+                chunk.content.encode("utf-8")
+            ).hexdigest()
+        for summary in session.scalars(select(DocumentSummary)):
+            summary.work_key = hashlib.sha256(
+                f"{summary.document_text.document_id}:{summary.model_name}:"
+                f"{summary.prompt_version}".encode()
+            ).hexdigest()
         for document_text in session.scalars(
             select(DocumentText).where(DocumentText.cleaned_text.is_(None))
         ):

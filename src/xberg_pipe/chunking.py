@@ -1,3 +1,4 @@
+import hashlib
 import re
 import unicodedata
 from collections.abc import Callable
@@ -151,6 +152,7 @@ def replace_document_chunks(
             document_text=document_text,
             chunk_index=index,
             content=content,
+            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
             character_count=len(content),
             chunker_version=CHUNKER_VERSION,
         )

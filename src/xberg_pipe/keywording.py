@@ -1,6 +1,7 @@
 import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -270,13 +271,16 @@ def rebuild_all_keywords(
     extractor: RuriKeyBertExtractor | None = None,
     progress: Callable[[KeywordResult], None] | None = None,
     all_items: bool = False,
+    workers: int = 1,
 ) -> KeywordResult:
     """保存済み文書をKeyBERTで処理し、ファイル単位のキーワードを保存する."""
 
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
+    if workers <= 0:
+        raise ValueError("workers must be positive")
     config: KeywordConfig = config or KeywordConfig()
-    extractor: RuriKeyBertExtractor = extractor or RuriKeyBertExtractor(config)
+    extractor = extractor or RuriKeyBertExtractor(config)
     result = KeywordResult()
     statement: Select[DocumentText] = (
         select(DocumentText)
@@ -293,7 +297,30 @@ def rebuild_all_keywords(
             )
             .exists()
         )
-    for document_text in session.scalars(statement):
+    document_texts = list(session.scalars(statement))
+    if workers > 1:
+
+        def extract_one(item: DocumentText) -> list[tuple[str, float]]:
+            worker_extractor = RuriKeyBertExtractor(config)
+            return extract_document_keywords(item, worker_extractor, config)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            outputs = pool.map(extract_one, document_texts)
+            for document_text, keywords in zip(document_texts, outputs, strict=True):
+                if not document_text.processing_text.strip():
+                    result.skipped += 1
+                else:
+                    result.keywords += replace_document_keywords(
+                        session, document_text, keywords, config.model_name
+                    )
+                    result.documents += 1
+                if progress is not None:
+                    progress(result)
+                if result.documents and result.documents % batch_size == 0:
+                    session.commit()
+        session.commit()
+        return result
+    for document_text in document_texts:
         if not document_text.processing_text.strip():
             result.skipped += 1
             if progress is not None:

@@ -44,6 +44,7 @@ class DocumentText(Base):
     __tablename__ = "document_texts"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("document_id", "extractor", name="uq_document_id_extractor"),
@@ -99,6 +100,7 @@ class DocumentChunk(Base):
     )
     chunk_index: Mapped[int]
     content: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     character_count: Mapped[int]
     chunker_version: Mapped[str] = mapped_column(String(20))
 
@@ -158,6 +160,7 @@ class DocumentSummary(Base):
         UniqueConstraint(
             "document_text_id", "model_name", "prompt_version", name="uq_text_summary"
         ),
+        UniqueConstraint("work_key", name="uq_document_summary_work_key"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -168,6 +171,7 @@ class DocumentSummary(Base):
     endpoint: Mapped[str] = mapped_column(String(500))
     prompt_version: Mapped[str] = mapped_column(String(20))
     summary: Mapped[str] = mapped_column(Text)
+    work_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     document_text: Mapped[DocumentText] = relationship(back_populates="summaries")
 

@@ -38,6 +38,22 @@ uv run xberg-pipe refine-keywords
 
 既存のデータベースも次の`scan`で軽量なキーフレーズを生成します。
 
+## 複数端末での処理と統合
+
+各端末は同じSQLiteファイルを共有せず、端末ごとのデータベースで処理します。
+完了後、1台の端末で次のように統合します。文書ハッシュ・抽出器・チャンク位置・
+モデル版を使って既存結果と照合するため、SQLite内の採番IDが異なっていても統合できます。
+ベクトル実体は端末間で移送せず、統合後にマージ先で再生成します。
+
+```console
+uv run xberg-pipe --database data/merged.db merge data/device-a.db data/device-b.db
+uv run xberg-pipe --database data/merged.db embed
+```
+
+`refine-keywords` と `summarize` は `--workers N` で単一端末内の並列処理数を
+指定できます（既定値は1）。並列度はGPUメモリやOllamaサーバーの処理能力に
+合わせて設定してください。
+
 ## 検索
 
 検索処理は `xberg_pipe.search` にまとまっており、CLIとWeb APIから共通で使用します。

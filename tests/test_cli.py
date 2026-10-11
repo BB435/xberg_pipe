@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from xberg_pipe.chunking import CHUNKER_VERSION
@@ -40,6 +40,40 @@ def test_keybert_refinement_is_a_separate_command() -> None:
 
     assert scan.command == "scan"
     assert refine.model
+
+
+def test_merge_combines_documents_and_is_repeatable(tmp_path: Path) -> None:
+    from xberg_pipe.db import create_db_engine, init_db
+    from xberg_pipe.merge import merge_database
+    from xberg_pipe.models import Document, DocumentPath, DocumentText
+
+    source = tmp_path / "source.db"
+    target = tmp_path / "target.db"
+    engine = create_db_engine(source)
+    init_db(engine)
+    with Session(engine) as session:
+        document = Document(id="a" * 64, extension=".txt", status="extracted")
+        session.add(document)
+        document.paths.append(
+            DocumentPath(
+                path=str(tmp_path / "document.txt"),
+                file_size=3,
+                modified_at=__import__("datetime").datetime(2026, 1, 1),
+            )
+        )
+        document.texts.append(
+            DocumentText(
+                extractor="xberg", extracted_text="本文", content_hash="content"
+            )
+        )
+        session.commit()
+    engine.dispose()
+
+    assert merge_database(target, [source]) == 1
+    assert merge_database(target, [source]) == 1
+    with Session(create_db_engine(target)) as session:
+        assert len(session.scalars(select(DocumentChunk)).all()) == 0
+        assert session.scalar(select(func.count()).select_from(DocumentText)) == 1
 
 
 def test_scan_saves_light_keywords_without_keybert(tmp_path: Path, monkeypatch) -> None:

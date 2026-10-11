@@ -305,6 +305,7 @@ class ScanExtractor:
             document_text.light_keyword_count = None
         document_text.extracted_text = text
         document_text.cleaned_text = clean_extracted_text(text)
+        document_text.content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         self._delete_document_if_orphaned(previous_document, except_document=document)
         return document_text
 

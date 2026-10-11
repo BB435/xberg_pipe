@@ -1,4 +1,6 @@
+import hashlib
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -141,6 +143,25 @@ def summarize_document(
     ]
     if not chunks:
         chunks = chunk_text(document_text.processing_text)[:MAX_DOWNSTREAM_CHUNKS]
+    return _summarize_chunks(chunks, client, config)
+
+
+def _summarize_parts(
+    processing_text: str,
+    chunks: list[str],
+    client: SummaryClient,
+    config: SummaryConfig,
+) -> str:
+    if not chunks:
+        chunks = chunk_text(processing_text)[:MAX_DOWNSTREAM_CHUNKS]
+    return _summarize_chunks(
+        [chunk[:DEFAULT_TARGET_CHARS] for chunk in chunks], client, config
+    )
+
+
+def _summarize_chunks(
+    chunks: list[str], client: SummaryClient, config: SummaryConfig
+) -> str:
     if not chunks:
         return ""
 
@@ -187,6 +208,9 @@ def replace_document_summary(
             endpoint=config.host,
             prompt_version=PROMPT_VERSION,
             summary=summary,
+            work_key=hashlib.sha256(
+                f"{document_text.document_id}:{config.model_name}:{PROMPT_VERSION}".encode()
+            ).hexdigest(),
         )
     )
 
@@ -197,7 +221,10 @@ def rebuild_all_summaries(
     client: SummaryClient | None = None,
     progress: Callable[[SummaryResult], None] | None = None,
     all_items: bool = False,
+    workers: int = 1,
 ) -> SummaryResult:
+    if workers <= 0:
+        raise ValueError("workers must be positive")
     client = client or OllamaSummaryClient(config)
     result = SummaryResult()
     statement = select(DocumentText.id).order_by(DocumentText.id)
@@ -211,27 +238,59 @@ def rebuild_all_summaries(
             )
             .exists()
         )
-    ids = session.scalars(statement).all()
-    for document_text_id in ids:
-        document_text = session.scalar(
-            select(DocumentText)
-            .options(selectinload(DocumentText.chunks))
-            .where(DocumentText.id == document_text_id)
-        )
-        if document_text is None or not document_text.processing_text.strip():
-            result.skipped += 1
-            if progress is not None:
-                progress(result)
-            continue
+    items = session.scalars(
+        select(DocumentText)
+        .options(selectinload(DocumentText.chunks))
+        .where(DocumentText.id.in_(session.scalars(statement).all()))
+        .order_by(DocumentText.id)
+    ).all()
+
+    def process(
+        item: tuple[int, str, list[str]],
+    ) -> tuple[int, str | None, Exception | None]:
+        document_text_id, processing_text, chunks = item
+        if not processing_text.strip():
+            return document_text_id, None, None
         try:
-            summary = summarize_document(document_text, client, config)
-            replace_document_summary(session, document_text, summary, config)
-            session.commit()
-            result.documents += 1
-        except Exception:
-            session.rollback()
+            summary = _summarize_parts(processing_text, chunks, client, config)
+            return document_text_id, summary, None
+        except (RuntimeError, ValueError, OSError) as error:
+            return document_text_id, None, error
+
+    work_items = [
+        (
+            item.id,
+            item.processing_text,
+            [chunk.content for chunk in item.chunks[:MAX_DOWNSTREAM_CHUNKS]],
+        )
+        for item in items
+    ]
+
+    def save_processed(item: tuple[int, str | None, Exception | None]) -> None:
+        document_text_id, summary, error = item
+        if error is not None:
             result.failed += 1
-            logger.exception(f"Could not summarize document_text={document_text_id}")
+            logger.error(
+                f"Could not summarize document_text={document_text_id}: {error}"
+            )
+        elif summary is None:
+            result.skipped += 1
+        else:
+            document_text = session.scalar(
+                select(DocumentText).where(DocumentText.id == document_text_id)
+            )
+            if document_text is not None:
+                replace_document_summary(session, document_text, summary, config)
+                session.commit()
+                result.documents += 1
         if progress is not None:
             progress(result)
+
+    if workers == 1:
+        for work_item in work_items:
+            save_processed(process(work_item))
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for completed in pool.map(process, work_items):
+                save_processed(completed)
     return result

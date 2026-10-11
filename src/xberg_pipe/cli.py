@@ -88,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     refine.add_argument("--model", choices=RURI_MODELS, default=DEFAULT_MODEL)
     refine.add_argument("--device", help="例: cpu, cuda, cuda:0")
     refine.add_argument("--batch-size", type=int, default=20)
+    refine.add_argument("--workers", type=int, default=1, help="並列処理数")
     refine.add_argument("--all", action="store_true", help="処理済み文書も再実行")
 
     summarize = subparsers.add_parser(
@@ -107,6 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     summarize.add_argument("--think", action="store_true", help="思考モードを有効化")
     summarize.add_argument("--keep-alive", default="10m")
     summarize.add_argument("--all", action="store_true", help="処理済み文書も再実行")
+    summarize.add_argument("--workers", type=int, default=1, help="並列処理数")
 
     embed = subparsers.add_parser(
         "embed", help="チャンクの検索用ベクトルをsqlite-vecへ保存します。"
@@ -132,6 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--top-k", type=int, default=10)
 
     subparsers.add_parser("stats", help="SQLiteに保存された件数を表示します。")
+    merge = subparsers.add_parser(
+        "merge", help="別端末のSQLiteデータベースを統合します。"
+    )
+    merge.add_argument("sources", nargs="+", type=Path, help="取り込むSQLiteファイル")
     return parser
 
 
@@ -228,6 +234,7 @@ def _run_refine_keywords(args: argparse.Namespace, session: Session) -> int:
             config=config,
             batch_size=args.batch_size,
             all_items=args.all,
+            workers=args.workers,
             progress=lambda current: _advance_progress(
                 bar,
                 current.documents + current.skipped,
@@ -258,6 +265,14 @@ def _run_stats(session: Session) -> int:
     return 0
 
 
+def _run_merge(args: argparse.Namespace) -> int:
+    from xberg_pipe.merge import merge_database
+
+    count = merge_database(args.database, args.sources)
+    print(f"統合文書={count}")
+    return 0
+
+
 def _run_summarize(args: argparse.Namespace, session: Session) -> int:
     from xberg_pipe.summarization import SummaryConfig, rebuild_all_summaries
 
@@ -277,6 +292,7 @@ def _run_summarize(args: argparse.Namespace, session: Session) -> int:
             session,
             config,
             all_items=args.all,
+            workers=args.workers,
             progress=lambda current: _advance_progress(
                 bar,
                 current.documents + current.failed + current.skipped,
@@ -356,6 +372,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return _run_search(args)
             if args.command == "stats":
                 return _run_stats(session)
+            if args.command == "merge":
+                return _run_merge(args)
     except (OSError, RuntimeError, ValueError) as error:
         parser.error(str(error))
     return 1
