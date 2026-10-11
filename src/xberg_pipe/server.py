@@ -44,7 +44,13 @@ def create_app(
         return _INDEX_HTML
 
     def run_search(
-        mode: str, q: str, top_k: int, path: str | None, extension: str | None
+        mode: str,
+        q: str,
+        top_k: int,
+        path: str | None,
+        directory: str | None,
+        extension: str | None,
+        operator: str,
     ):
         if not q.strip():
             raise HTTPException(status_code=422, detail="検索語を入力してください")
@@ -56,7 +62,9 @@ def create_app(
                 top_k=top_k,
                 preview_chars=preview_chars,
                 path_filter=path,
+                directory=directory,
                 extension=extension,
+                operator=operator,
                 config=embedding_config,
                 encoder=encoder,
             )
@@ -74,11 +82,13 @@ def create_app(
         q: str = Query(min_length=1),
         top_k: int = Query(default=10, ge=1, le=100),
         path: str | None = None,
+        directory: str | None = None,
         extension: str | None = None,
+        operator: str = Query(default="and", pattern="^(and|or)$"),
     ) -> dict[str, object]:
         if mode not in {"keyword", "vector", "hybrid"}:
             raise HTTPException(status_code=404, detail="検索モードが見つかりません")
-        return run_search(mode, q, top_k, path, extension)
+        return run_search(mode, q, top_k, path, directory, extension, operator)
 
     return app
 
@@ -94,14 +104,16 @@ select,button{padding:.7rem}article{border-top:1px solid #ddd;padding:1rem 0}
 </style></head><body><h1>文書検索</h1>
 <form id="search"><input id="q" required placeholder="検索語を入力">
 <select id="mode"><option value="keyword">キーワード検索</option><option value="hybrid">複合検索</option><option value="vector">ベクトル検索</option></select>
-<input id="path" placeholder="パスで絞り込み"><input id="extension" placeholder="拡張子 (例: pdf)">
+<select id="operator"><option value="and">すべて含む (AND)</option><option value="or">いずれか含む (OR)</option></select>
+<input id="directory" placeholder="ディレクトリ配下 (例: docs)"><input id="path" placeholder="パスに含む文字"><input id="extension" placeholder="拡張子 (例: pdf)">
 <button>検索</button></form><main id="results"></main>
+<p class="meta">空白で語を区切り、引用符でフレーズを指定できます。-語 で除外します。AND・ORはキーワード検索に適用されます。</p>
 <script>
 const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
 document.querySelector('#search').addEventListener('submit',async e=>{e.preventDefault();
  const q=document.querySelector('#q').value,mode=document.querySelector('#mode').value,out=document.querySelector('#results');
  out.innerHTML='<p class="empty">検索中…</p>';
- try{const params=new URLSearchParams({q});for(const id of ['path','extension']){const value=document.querySelector('#'+id).value.trim();if(value)params.set(id,value)}
+ try{const params=new URLSearchParams({q,operator:document.querySelector('#operator').value});for(const id of ['path','directory','extension']){const value=document.querySelector('#'+id).value.trim();if(value)params.set(id,value)}
  const r=await fetch(`/api/search/${mode}?${params}`),data=await r.json();
  if(!r.ok)throw new Error(data.detail||'検索に失敗しました');
  out.innerHTML=data.results.length?data.results.map((x,i)=>`<article><div class="meta">${i+1}. ${esc(x.path||x.document_id)} ${x.distance!=null?' / distance '+x.distance.toFixed(4):''}</div><p>${esc(x.preview)}</p></article>`).join(''):'<p class="empty">該当する文書はありません。</p>';

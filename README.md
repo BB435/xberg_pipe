@@ -47,10 +47,16 @@ uv run xberg-pipe refine-keywords
 ```console
 uv run xberg-pipe search "人工知能"
 uv run xberg-pipe search "人工知能" --mode hybrid --path docs --extension pdf
+uv run xberg-pipe search '"人工知能 研究" -広告' --directory docs
+uv run xberg-pipe search "人工知能 研究" --operator or
 ```
 
 `--mode` は `keyword`（既定）、`vector`、`hybrid` から選べます。
 `--path` はパス内の文字列、`--extension` は拡張子で絞り込みます。
+`--directory` は指定ディレクトリの直下と子孫のみを対象にします。
+キーワード検索は空白で語を区切り、既定ではすべての語を含む文書を探します。
+`--operator or` でいずれかの語に一致させ、`-語` で除外できます。
+引用符で囲むと空白を含むフレーズとして照合します。
 複合検索はキーワードとベクトルの順位を統合し、文書ごとに1件返します。
 
 ## 検索サーバー
@@ -62,8 +68,8 @@ uv run xberg-pipe-server --database data/app.db
 
 起動後、`http://127.0.0.1:8000/` で検索画面を開けます。APIは
 `/api/search/vector?q=検索文`、`/api/search/keyword?q=検索語`、
-`/api/search/hybrid?q=検索文` です。いずれも `top_k`、`path`、`extension`
-を指定できます。
+`/api/search/hybrid?q=検索文` です。`top_k`、`path`、`directory`、
+`extension` を指定できます。キーワード検索には `operator=and|or` も指定できます。
 
 ## Ollamaによる要約
 

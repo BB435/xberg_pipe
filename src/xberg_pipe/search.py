@@ -1,5 +1,6 @@
 """CLIとWebで共有する文書検索。"""
 
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +43,31 @@ def _validate(query: str, top_k: int, preview_chars: int) -> str:
     return query
 
 
+def _terms(query: str) -> tuple[list[str], list[str]]:
+    """引用符付きフレーズと除外語を分解する。"""
+    try:
+        tokens = shlex.split(query)
+    except ValueError as error:
+        raise ValueError("引用符を閉じてください") from error
+    positive = [token for token in tokens if not token.startswith("-")]
+    negative = [
+        token[1:] for token in tokens if token.startswith("-") and len(token) > 1
+    ]
+    if not positive:
+        raise ValueError("検索語を入力してください")
+    return positive, negative
+
+
+def _in_directory(path: str | None, directory: str | None) -> bool:
+    if not directory:
+        return True
+    root = directory.replace("\\", "/").rstrip("/")
+    if not root or not path:
+        return False
+    normalized = path.replace("\\", "/")
+    return normalized.startswith(root + "/")
+
+
 def keyword_search(
     session: Session,
     query: str,
@@ -50,10 +76,15 @@ def keyword_search(
     preview_chars: int = 240,
     model_name: str = DEFAULT_MODEL,
     path_filter: str | None = None,
+    directory: str | None = None,
     extension: str | None = None,
+    operator: str = "and",
 ) -> list[SearchHit]:
     """保存済みキーワードと本文から文書を探す。"""
     query = _validate(query, top_k, preview_chars)
+    if operator not in {"and", "or"}:
+        raise ValueError("operatorはandまたはorを指定してください")
+    positive, negative = _terms(query)
     path_column = (
         select(DocumentPath.path)
         .where(DocumentPath.document_id == DocumentText.document_id)
@@ -70,15 +101,42 @@ def keyword_search(
         )
         .exists()
     )
+    body = func.coalesce(DocumentText.cleaned_text, DocumentText.extracted_text)
+
+    # 否定語は別のキーワード行にも適用するため、文書単位の副問い合わせで判定する。
+    def has_term(term: str):
+        keyword_match = (
+            select(DocumentKeyword.id)
+            .join(Keyword, Keyword.id == DocumentKeyword.keyword_id)
+            .where(
+                DocumentKeyword.document_text_id == DocumentText.id,
+                or_(
+                    DocumentKeyword.model_name == model_name,
+                    and_(DocumentKeyword.model_name == LIGHT_MODEL, ~has_refined),
+                ),
+                Keyword.value.contains(term, autoescape=True),
+            )
+            .exists()
+        )
+        return or_(body.like(_pattern(term), escape="\\"), keyword_match)
+
     matching_score = func.max(
-        case((Keyword.value.contains(query, autoescape=True), DocumentKeyword.score))
+        case(
+            (
+                or_(
+                    *(
+                        Keyword.value.contains(term, autoescape=True)
+                        for term in positive
+                    )
+                ),
+                DocumentKeyword.score,
+            )
+        )
     )
     statement = (
         select(
             DocumentText.document_id,
-            func.coalesce(DocumentText.cleaned_text, DocumentText.extracted_text).label(
-                "body"
-            ),
+            body.label("body"),
             path_column.label("path"),
             matching_score.label("score"),
             func.group_concat(Keyword.value, ", ").label("keywords"),
@@ -96,13 +154,11 @@ def keyword_search(
         )
         .outerjoin(Keyword, Keyword.id == DocumentKeyword.keyword_id)
         .where(
-            or_(
-                Keyword.value.contains(query, autoescape=True),
-                func.coalesce(
-                    DocumentText.cleaned_text, DocumentText.extracted_text
-                ).like(_pattern(query), escape="\\"),
-            )
+            and_(*(has_term(term) for term in positive))
+            if operator == "and"
+            else or_(*(has_term(term) for term in positive))
         )
+        .where(*(~has_term(term) for term in negative))
         .group_by(DocumentText.id)
         .order_by(matching_score.desc(), DocumentText.document_id)
         .limit(top_k)
@@ -111,6 +167,11 @@ def keyword_search(
         statement = statement.where(
             path_column.like(_pattern(path_filter), escape="\\")
         )
+    if directory:
+        root = directory.replace("\\", "/").rstrip("/")
+        if not root:
+            raise ValueError("directoryはディレクトリを指定してください")
+        statement = statement.where(path_column.startswith(root + "/", autoescape=True))
     if extension:
         suffix = extension if extension.startswith(".") else f".{extension}"
         statement = statement.where(path_column.endswith(suffix, autoescape=True))
@@ -134,7 +195,9 @@ def search(
     top_k: int = 10,
     preview_chars: int = 240,
     path_filter: str | None = None,
+    directory: str | None = None,
     extension: str | None = None,
+    operator: str = "and",
     config: EmbeddingConfig | None = None,
     encoder: Encoder | None = None,
 ) -> list[SearchHit]:
@@ -156,7 +219,9 @@ def search(
                     preview_chars=preview_chars,
                     model_name=config.model_name,
                     path_filter=path_filter,
+                    directory=directory,
                     extension=extension,
+                    operator=operator,
                 )
                 if mode in {"keyword", "hybrid"}
                 else []
@@ -190,6 +255,8 @@ def search(
                     if path_filter and (
                         not match.path or path_filter not in match.path
                     ):
+                        continue
+                    if not _in_directory(match.path, directory):
                         continue
                     suffix = (
                         extension

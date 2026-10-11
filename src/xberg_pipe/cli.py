@@ -124,7 +124,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode", choices=("hybrid", "keyword", "vector"), default="keyword"
     )
     search.add_argument("--path", help="パスに含まれる文字列")
+    search.add_argument("--directory", help="指定ディレクトリ配下のみ")
     search.add_argument("--extension", help="拡張子 (例: pdf)")
+    search.add_argument("--operator", choices=("and", "or"), default="and")
     search.add_argument("--model", choices=RURI_MODELS, default=DEFAULT_MODEL)
     search.add_argument("--device", help="例: cpu, cuda, cuda:0")
     search.add_argument("--top-k", type=int, default=10)
@@ -315,7 +317,9 @@ def _run_search(args: argparse.Namespace) -> int:
         mode=args.mode,
         top_k=args.top_k,
         path_filter=args.path,
+        directory=args.directory,
         extension=args.extension,
+        operator=args.operator,
         config=config,
     )
     for rank, item in enumerate(results, start=1):
