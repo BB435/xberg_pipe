@@ -31,7 +31,7 @@ from xberg_pipe.models import (
     DocumentSummary,
     DocumentText,
 )
-from xberg_pipe.scan_extractor import BATCH_SIZE, ScanExtractor
+from xberg_pipe.scan_extractor import BATCH_SIZE, DEFAULT_WORKERS, ScanExtractor
 from xberg_pipe.summarization import (
     DEFAULT_CONTEXT_WINDOW,
     DEFAULT_OLLAMA_HOST,
@@ -66,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--batch-size", type=int, default=BATCH_SIZE, help="一度に抽出するファイル数"
     )
+    scan.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="並列抽出数")
     scan.add_argument(
         "--ocr-backend", default="paddleocr", help="xberg OCRバックエンド"
     )
@@ -206,6 +207,7 @@ def _run_scan(args: argparse.Namespace, session: Session) -> int:
                 root,
                 extraction_config=extraction_config,
                 batch_size=args.batch_size,
+                workers=args.workers,
                 postprocess=postprocess,
                 required_summary=(
                     provisional_summary.MODEL_NAME,

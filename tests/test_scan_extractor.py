@@ -1,5 +1,6 @@
 import asyncio
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -68,19 +69,33 @@ def test_scan_commits_once_per_extraction_batch(tmp_path: Path, monkeypatch) -> 
     batch_sizes = []
     commits = []
 
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
     async def fake_extract_batch(inputs, _config):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        with lock:
+            active -= 1
         batch_sizes.append(len(inputs))
         return SimpleNamespace(
-            results=[SimpleNamespace(content=item.uri) for item in inputs], errors=[]
+            results=[SimpleNamespace(content=inputs[0].uri)], errors=[]
         )
 
     monkeypatch.setattr("xberg_pipe.scan_extractor.extract_batch", fake_extract_batch)
     event.listen(engine, "commit", lambda _connection: commits.append(1))
     with Session(engine) as session:
-        result = asyncio.run(ScanExtractor(session, tmp_path, batch_size=2).scan())
+        result = asyncio.run(
+            ScanExtractor(session, tmp_path, batch_size=5, workers=2).scan()
+        )
         assert result.extracted == 5
-        assert sorted(batch_sizes) == [1, 2, 2]
-        assert len(commits) == 4  # 抽出バッチ3回と削除済みパスの確認後に1回
+        assert batch_sizes == [1] * 5
+        assert max_active == 2
+        assert len(commits) == 2  # 抽出結果の一括保存と走査後の確認
         assert session.scalar(select(func.count()).select_from(DocumentText)) == 5
 
 

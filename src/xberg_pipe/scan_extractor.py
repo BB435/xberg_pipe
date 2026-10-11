@@ -1,3 +1,4 @@
+import asyncio
 import datetime as dt
 import hashlib
 import os
@@ -50,6 +51,7 @@ SUPPORTED_EXTENSIONS = {
     ".msg",
 }
 BATCH_SIZE = 20
+DEFAULT_WORKERS = 4
 
 EXTRACTOR_NAME = "xberg"
 STATUS_EXTRACTED = "extracted"
@@ -103,15 +105,19 @@ class ScanExtractor:
         root: Path,
         extraction_config: ExtractionConfig | None = None,
         batch_size: int = BATCH_SIZE,
+        workers: int = DEFAULT_WORKERS,
         progress: Callable[[ScanResult], None] | None = None,
         postprocess: Callable[[Session, DocumentText], None] | None = None,
         required_summary: tuple[str, str] | None = None,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
+        if workers <= 0:
+            raise ValueError("workers must be positive")
         self.session = session
         self.root = root
         self.batch_size = batch_size
+        self.workers = workers
         self.extraction_config = extraction_config or ExtractionConfig(
             ocr=OcrConfig(backend="paddleocr", language=["jpn", "en"])
         )
@@ -139,48 +145,65 @@ class ScanExtractor:
     ) -> set[str]:
         """一つのバッチの更新判定に必要なメタデータをまとめて読む."""
 
-        processed_clause = true()
-        if self.required_summary is not None:
-            model_name, prompt_version = self.required_summary
-            processed_clause = exists().where(
-                DocumentSummary.document_text_id == DocumentText.id,
-                DocumentSummary.model_name == model_name,
-                DocumentSummary.prompt_version == prompt_version,
-            )
-            has_chunks = exists().where(
-                DocumentChunk.document_text_id == DocumentText.id
-            )
-            keyword_count = (
-                select(func.count(DocumentKeyword.id))
-                .where(
-                    DocumentKeyword.document_text_id == DocumentText.id,
-                    DocumentKeyword.model_name == LIGHT_MODEL,
-                )
-                .scalar_subquery()
-            )
-            processed_clause = (
-                processed_clause
-                & (
-                    has_chunks
-                    | (
-                        func.trim(
-                            func.coalesce(
-                                DocumentText.cleaned_text, DocumentText.extracted_text
-                            )
-                        )
-                        == ""
-                    )
-                )
-                & DocumentText.light_keyword_count.is_not(None)
-                & (DocumentText.light_keyword_count == keyword_count)
-            )
         resolved = {
             resolved_paths[path]
             if resolved_paths is not None
             else str(path.resolve()): path
             for path in paths
         }
-        rows = self.session.execute(
+        rows = self.session.execute(self._unchanged_statement(resolved))
+        return {
+            stored_path
+            for stored_path, modified_at, file_size, status, document_id, text_id, processed in rows
+            if status == STATUS_EXTRACTED
+            and text_id is not None
+            and processed
+            and (stat := resolved[stored_path].stat()).st_size == file_size
+            and dt.datetime.fromtimestamp(stat.st_mtime, dt.UTC).replace(tzinfo=None)
+            == modified_at
+            and sha256_of(resolved[stored_path]) == document_id
+        }
+
+    def _unchanged_statement(self, paths, processed_clause=None):
+        if processed_clause is None:
+            processed_clause = true()
+            if self.required_summary is not None:
+                model_name, prompt_version = self.required_summary
+                processed_clause = exists().where(
+                    DocumentSummary.document_text_id == DocumentText.id,
+                    DocumentSummary.model_name == model_name,
+                    DocumentSummary.prompt_version == prompt_version,
+                )
+                has_chunks = exists().where(
+                    DocumentChunk.document_text_id == DocumentText.id
+                )
+                keyword_count = (
+                    select(func.count(DocumentKeyword.id))
+                    .where(
+                        DocumentKeyword.document_text_id == DocumentText.id,
+                        DocumentKeyword.model_name == LIGHT_MODEL,
+                    )
+                    .scalar_subquery()
+                )
+                processed_clause = (
+                    processed_clause
+                    & (
+                        has_chunks
+                        | (
+                            func.trim(
+                                func.coalesce(
+                                    DocumentText.cleaned_text,
+                                    DocumentText.extracted_text,
+                                )
+                            )
+                            == ""
+                        )
+                    )
+                    & DocumentText.light_keyword_count.is_not(None)
+                    & (DocumentText.light_keyword_count == keyword_count)
+                )
+        path_values = list(paths)
+        return (
             select(
                 DocumentPath.path,
                 DocumentPath.modified_at,
@@ -196,19 +219,8 @@ class ScanExtractor:
                 (DocumentText.document_id == Document.id)
                 & (DocumentText.extractor == EXTRACTOR_NAME),
             )
-            .where(DocumentPath.path.in_(resolved))
+            .where(DocumentPath.path.in_(path_values))
         )
-        return {
-            stored_path
-            for stored_path, modified_at, file_size, status, document_id, text_id, processed in rows
-            if status == STATUS_EXTRACTED
-            and text_id is not None
-            and processed
-            and (stat := resolved[stored_path].stat()).st_size == file_size
-            and dt.datetime.fromtimestamp(stat.st_mtime, dt.UTC).replace(tzinfo=None)
-            == modified_at
-            and sha256_of(resolved[stored_path]) == document_id
-        }
 
     async def scan(self) -> ScanResult:
         """対象ファイルを再帰探索し、変更分の抽出結果をSQLiteへ保存する."""
@@ -219,7 +231,7 @@ class ScanExtractor:
             resolved = {path: str(path.resolve()) for path in paths}
             seen_paths.update(resolved.values())
             result.discovered += len(paths)
-            unchanged = self._unchanged_paths(paths, resolved)
+            unchanged = await self._unchanged_paths_parallel(paths, resolved)
             changed_paths = [path for path in paths if resolved[path] not in unchanged]
             result.skipped += len(paths) - len(changed_paths)
             if not changed_paths:
@@ -227,56 +239,24 @@ class ScanExtractor:
                     self.progress(result)
                 continue
 
-            source_stats = {}
+            batch_result = await self._extract_parallel(changed_paths, resolved)
             for path in changed_paths:
-                stat = path.stat()
-                source_stats[path] = (stat.st_size, stat.st_mtime_ns)
-            try:
-                extraction = await extract_batch(
-                    [
-                        ExtractInput(kind="uri", uri=resolved[path])
-                        for path in changed_paths
-                    ],
-                    self.extraction_config,
-                )
-            except Exception:
-                logger.exception(
-                    f"Batch extraction failed ({len(changed_paths)} files)"
-                )
-                for path in changed_paths:
+                status, content, message = batch_result[path]
+                if status == "failed":
                     result.failed += 1
-                    self._mark_failed(path, commit=False)
-                self.session.commit()
-                if self.progress is not None:
-                    self.progress(result)
-                continue
-
-            errors_by_index = {error.index: error for error in extraction.errors}
-            documents = iter(extraction.results)
-            for index, path in enumerate(changed_paths):
-                error = errors_by_index.get(index)
-                if error is not None:
-                    result.failed += 1
-                    logger.error(f"Extraction failed for {path}: {error.message}")
+                    logger.error(f"Extraction failed for {path}: {message}")
                     self._mark_failed(path, commit=False)
                     continue
-
+                if status == "changed":
+                    result.failed += 1
+                    logger.warning(f"File changed during extraction: {path}")
+                    continue
                 try:
-                    extracted = next(documents)
-                    stat = path.stat()
-                    if (stat.st_size, stat.st_mtime_ns) != source_stats[path]:
-                        result.failed += 1
-                        logger.warning(f"File changed during extraction: {path}")
-                        continue
                     with self.session.begin_nested():
-                        document_text = self._save(path, extracted.content)
+                        document_text = self._save(path, content or "")
                         if self.postprocess is not None:
                             self.postprocess(self.session, document_text)
                     result.extracted += 1
-                except StopIteration:
-                    result.failed += 1
-                    logger.error(f"Extractor returned no result for {path}")
-                    self._mark_failed(path, commit=False)
                 except Exception:
                     result.failed += 1
                     logger.exception(f"Could not save extraction result for {path}")
@@ -287,6 +267,103 @@ class ScanExtractor:
         self._remove_missing_paths(seen_paths)
         self.session.commit()
         return result
+
+    async def _unchanged_paths_parallel(
+        self, paths: list[Path], resolved_paths: dict[Path, str]
+    ) -> set[str]:
+        """DBで状態をまとめて読み、ファイル検査はワーカーへ分配する."""
+
+        rows = self.session.execute(
+            self._unchanged_statement(resolved_paths.values())
+        ).all()
+        candidates = [
+            (
+                stored_path,
+                modified_at,
+                file_size,
+                status,
+                document_id,
+                text_id,
+                processed,
+            )
+            for stored_path, modified_at, file_size, status, document_id, text_id, processed in rows
+            if status == STATUS_EXTRACTED and text_id is not None and processed
+        ]
+
+        def check(row) -> str | None:
+            (
+                stored_path,
+                modified_at,
+                file_size,
+                _status,
+                document_id,
+                _text_id,
+                _processed,
+            ) = row
+            path = Path(stored_path)
+            try:
+                stat = path.stat()
+                if stat.st_size != file_size:
+                    return None
+                if (
+                    dt.datetime.fromtimestamp(stat.st_mtime, dt.UTC).replace(
+                        tzinfo=None
+                    )
+                    != modified_at
+                ):
+                    return None
+                if sha256_of(path) != document_id:
+                    return None
+            except OSError:
+                return None
+            return stored_path
+
+        semaphore = asyncio.Semaphore(self.workers)
+
+        async def bounded_check(row) -> str | None:
+            async with semaphore:
+                return await asyncio.to_thread(check, row)
+
+        checked = await asyncio.gather(*(bounded_check(row) for row in candidates))
+        return {path for path in checked if path is not None}
+
+    async def _extract_parallel(
+        self, paths: list[Path], resolved: dict[Path, str]
+    ) -> dict[Path, tuple[str, str | None, str | None]]:
+        """ファイルを並列抽出し、結果をパス別に返す。DBには触れない."""
+
+        semaphore = asyncio.Semaphore(self.workers)
+        source_stats = {
+            path: (path.stat().st_size, path.stat().st_mtime_ns) for path in paths
+        }
+        results: dict[Path, tuple[str, str | None, str | None]] = {}
+
+        async def extract_one(path: Path) -> None:
+            async with semaphore:
+                try:
+                    extraction = await extract_batch(
+                        [ExtractInput(kind="uri", uri=resolved[path])],
+                        self.extraction_config,
+                    )
+                    error = next(iter(extraction.errors), None)
+                    if error is not None:
+                        results[path] = ("failed", None, error.message)
+                        return
+                    extracted = next(iter(extraction.results), None)
+                    if extracted is None:
+                        results[path] = ("failed", None, "抽出結果がありません")
+                        return
+                    stat = path.stat()
+                    if (stat.st_size, stat.st_mtime_ns) != source_stats[path]:
+                        results[path] = ("changed", None, None)
+                        return
+                    results[path] = ("ok", extracted.content, None)
+                except Exception as error:
+                    results[path] = ("failed", None, str(error))
+                    logger.exception(f"Batch extraction failed for {path}")
+
+        await asyncio.gather(*(extract_one(path) for path in paths))
+        return results
 
     def _save(self, path: Path, text: str) -> DocumentText:
         document = get_or_create_document(

@@ -24,6 +24,9 @@ uv sync --group dev
 uv run xberg-pipe scan <directory>
 ```
 
+`scan` はファイルの変更判定と抽出を並列で実行し、SQLiteへの保存と後処理は
+単一の書き込み担当が行います。並列数は `--workers N` で調整できます（既定値は4）。
+
 KeyBERTでキーフレーズの精度を高める場合は、後から実行します。
 検索には精緻化した結果を優先し、未処理の文書には軽量な結果を使用します。
 
@@ -50,7 +53,7 @@ uv run xberg-pipe --database data/merged.db merge data/device-a.db data/device-b
 uv run xberg-pipe --database data/merged.db embed
 ```
 
-`refine-keywords` と `summarize` は `--workers N` で単一端末内の並列処理数を
+`refine-keywords`、`summarize` と `scan` は `--workers N` で単一端末内の並列処理数を
 指定できます（既定値は1）。並列度はGPUメモリやOllamaサーバーの処理能力に
 合わせて設定してください。
 
