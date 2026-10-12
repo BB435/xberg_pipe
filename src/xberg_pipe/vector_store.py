@@ -116,10 +116,11 @@ def _connect(db_path: str | Path) -> sqlite3.Connection:
         raise RuntimeError(
             "sqlite-vecがありません。uv sync --extra vectors を実行してください。"
         ) from error
-    connection = sqlite3.connect(db_path)
+    connection = sqlite3.connect(db_path, timeout=30)
     connection.enable_load_extension(True)
     sqlite_vec.load(connection)
     connection.enable_load_extension(False)
+    connection.execute("PRAGMA busy_timeout = 30000")
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
@@ -192,6 +193,10 @@ def rebuild_embeddings(
             result.chunks += len(rows)
             if progress is not None:
                 progress(result)
+            # 通常実行はチェックポイント単位で確定し、中断後に再開できるようにする。
+            # --all は全件再生成を一括で行い、失敗時は旧データを維持する。
+            if not all_items:
+                connection.commit()
         connection.commit()
     finally:
         connection.close()

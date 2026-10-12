@@ -1,7 +1,7 @@
 import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -116,7 +116,7 @@ class YakeKeywordExtractor:
 class RuriKeyBertExtractor:
     """Ruri v3と日本語形態素候補を利用するKeyBERT抽出器."""
 
-    def __init__(self, config: KeywordConfig) -> None:
+    def __init__(self, config: KeywordConfig, model=None) -> None:
         try:
             import numpy as np
             from ja_stopword_filter import JaStopwordFilter
@@ -140,7 +140,7 @@ class RuriKeyBertExtractor:
                 topical_documents = [TOPIC_PREFIX + document for document in documents]
                 return np.stack(list(self.model.embed(topical_documents)))
 
-        model = create_ruri_model(config.model_name, config.device)
+        model = model or create_ruri_model(config.model_name, config.device)
         self._keybert = KeyBERT(model=RuriTopicEmbedder(model))
         self._tokenizer = Dictionary(dict="full").tokenizer()
         self._split_mode = SplitMode.C
@@ -299,9 +299,22 @@ def rebuild_all_keywords(
             .exists()
         )
     if workers > 1:
+        # FastEmbed/ONNXのモデル重みは全ワーカーで共有し、Sudachiの
+        # tokenizerやKeyBERTラッパーだけをスレッドごとに持つ。
+        from xberg_pipe.fastembed_model import create_ruri_model
+
+        shared_model = create_ruri_model(config.model_name, config.device)
+        from threading import local
+
+        thread_state = local()
+
+        def get_worker_extractor() -> RuriKeyBertExtractor:
+            if not hasattr(thread_state, "extractor"):
+                thread_state.extractor = RuriKeyBertExtractor(config, shared_model)
+            return thread_state.extractor
 
         def extract_batch(items: list[tuple[int, str, list[str]]]):
-            worker_extractor = RuriKeyBertExtractor(config)
+            worker_extractor = get_worker_extractor()
 
             def extract_one(item: tuple[int, str, list[str]]):
                 document_id, processing_text, chunks = item
@@ -322,10 +335,35 @@ def rebuild_all_keywords(
 
             return [extract_one(item) for item in items]
 
-        ids = session.scalars(statement.with_only_columns(DocumentText.id)).all()
+        id_statement = statement.with_only_columns(DocumentText.id).order_by(
+            DocumentText.id
+        )
+        last_id = 0
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for start in range(0, len(ids), batch_size):
-                batch_ids = ids[start : start + batch_size]
+            pending = set()
+
+            def save_completed(completed) -> None:
+                for future in completed:
+                    outputs = future.result()
+                    for document_id, keywords in outputs:
+                        item = session.get(DocumentText, document_id)
+                        if item is None:
+                            continue
+                        if not item.processing_text.strip():
+                            result.skipped += 1
+                        else:
+                            result.keywords += replace_document_keywords(
+                                session, item, keywords, config.model_name
+                            )
+                            result.documents += 1
+                        if progress is not None:
+                            progress(result)
+                    session.commit()
+
+            while batch_ids := session.scalars(
+                id_statement.where(DocumentText.id > last_id).limit(batch_size)
+            ).all():
+                last_id = batch_ids[-1]
                 items = session.scalars(
                     select(DocumentText)
                     .options(selectinload(DocumentText.chunks))
@@ -340,18 +378,12 @@ def rebuild_all_keywords(
                     )
                     for item in items
                 ]
-                outputs = pool.submit(extract_batch, inputs).result()
-                for item, (_document_id, keywords) in zip(items, outputs, strict=True):
-                    if not item.processing_text.strip():
-                        result.skipped += 1
-                    else:
-                        result.keywords += replace_document_keywords(
-                            session, item, keywords, config.model_name
-                        )
-                        result.documents += 1
-                    if progress is not None:
-                        progress(result)
-                session.commit()
+                pending.add(pool.submit(extract_batch, inputs))
+                if len(pending) >= workers:
+                    completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    save_completed(completed)
+            if pending:
+                save_completed(wait(pending)[0])
         session.commit()
         return result
     document_texts = session.scalars(statement).yield_per(batch_size)

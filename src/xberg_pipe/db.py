@@ -15,13 +15,17 @@ def create_db_engine(db_path: str | Path = DB_PATH) -> Engine:
 
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    db_engine = create_engine(f"sqlite:///{path.as_posix()}")
+    # 複数の処理プロセスが同じDBを使う場合の短い一時ロックを待つ。
+    db_engine = create_engine(
+        f"sqlite:///{path.as_posix()}", connect_args={"timeout": 30}
+    )
 
     @event.listens_for(db_engine, "connect")
     def _enable_foreign_keys(dbapi_connection, _connection_record) -> None:
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA foreign_keys = ON")
+            cursor.execute("PRAGMA busy_timeout = 30000")
         finally:
             cursor.close()
 
